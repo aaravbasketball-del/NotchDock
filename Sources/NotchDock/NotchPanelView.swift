@@ -418,6 +418,7 @@ struct NotchPanelView: View {
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
     @FocusState private var customTimerFieldFocused: Bool
     @StateObject private var shelfState = ShelfViewState()
+    @StateObject private var updater = NotchUpdater()
 
     private var isLightTheme: Bool { themeName == "white" }
     private var ink: Color { isLightTheme ? .black : .white }
@@ -468,6 +469,7 @@ struct NotchPanelView: View {
         .contentShape(panelShape)
         .onHover(perform: onHoverChanged)
         .preferredColorScheme(isLightTheme ? .light : .dark)
+        .onAppear { updater.checkForUpdates() }
         .animation(.spring(response: 0.34, dampingFraction: 0.84), value: model.isExpanded)
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: model.hudActive)
         .animation(.easeInOut(duration: 0.2), value: model.selectedTab)
@@ -545,6 +547,14 @@ struct NotchPanelView: View {
             Color.clear.frame(width: 420, height: 1)
             HStack(spacing: 9) {
                 if model.isTimerRunning { Text(timerString).font(.system(size: 10, weight: .semibold, design: .rounded)).monospacedDigit() }
+                Button {
+                    if updater.updateAvailable { updater.installLatest() } else { updater.checkForUpdates() }
+                } label: {
+                    Label(updater.updateAvailable ? "Update" : "Check", systemImage: updater.updateAvailable ? "arrow.down.circle.fill" : "arrow.clockwise")
+                }
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .buttonStyle(UpdateButtonStyle())
+                .disabled(updater.isChecking || updater.isInstalling)
                 Button { onDismiss() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.62)).frame(width: 22, height: 22).background(ink.opacity(0.09), in: Circle()) }.buttonStyle(.plain)
             }.foregroundStyle(ink).frame(maxWidth: .infinity, alignment: .trailing)
         }.padding(.horizontal, 22).frame(height: 40)
