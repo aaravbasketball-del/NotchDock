@@ -102,10 +102,24 @@ final class NotchModel: ObservableObject {
     func addFiles(_ urls: [URL]) {
         for url in urls where !shelfURLs.contains(url) { shelfURLs.insert(url, at: 0) }
         UserDefaults.standard.set(shelfURLs.map(\.absoluteString), forKey: "notchdock.shelf")
+        statusMessage = urls.count == 1 ? "Added 1 file to Shelf" : "Added \(urls.count) files to Shelf"
     }
     func removeFile(_ url: URL) {
         shelfURLs.removeAll { $0 == url }
         UserDefaults.standard.set(shelfURLs.map(\.absoluteString), forKey: "notchdock.shelf")
+    }
+
+    func airDropShelfFiles() {
+        guard !shelfURLs.isEmpty else {
+            statusMessage = "Add files to Shelf first"
+            return
+        }
+        guard let service = NSSharingService(named: .sendViaAirDrop) else {
+            statusMessage = "AirDrop is unavailable on this Mac"
+            return
+        }
+        service.perform(withItems: shelfURLs)
+        statusMessage = shelfURLs.count == 1 ? "Choose a device in AirDrop" : "Choose a device for \(shelfURLs.count) files"
     }
 
     func startTimer(minutes: Int? = nil) {
@@ -391,6 +405,11 @@ enum NotchTab: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
+private final class ShelfViewState: ObservableObject {
+    @Published var showingFileImporter = false
+}
+
 struct NotchPanelView: View {
     @ObservedObject var model: NotchModel
     let onHoverChanged: (Bool) -> Void
@@ -398,6 +417,7 @@ struct NotchPanelView: View {
     @AppStorage("notchdock.theme") private var themeName = "black"
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
     @FocusState private var customTimerFieldFocused: Bool
+    @StateObject private var shelfState = ShelfViewState()
 
     private var isLightTheme: Bool { themeName == "white" }
     private var ink: Color { isLightTheme ? .black : .white }
@@ -948,6 +968,16 @@ struct NotchPanelView: View {
                     for provider in providers { _ = provider.loadObject(ofClass: NSURL.self) { object, _ in if let nsurl = object as? NSURL { let url = nsurl as URL; Task { @MainActor in model.addFiles([url]) } } } }
                     return !providers.isEmpty
                 }
+            HStack(spacing: 8) {
+                Button { shelfState.showingFileImporter = true } label: { Label("Choose files", systemImage: "plus") }.buttonStyle(ChipButton())
+                Button { model.airDropShelfFiles() } label: { Label("AirDrop all", systemImage: "antenna.radiowaves.left.and.right") }.buttonStyle(AccentButton()).disabled(model.shelfURLs.isEmpty)
+                Spacer()
+                if !model.shelfURLs.isEmpty {
+                    Text("\(model.shelfURLs.count) staged")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.48))
+                }
+            }
             if model.shelfURLs.isEmpty { emptyState("Your staged files appear here", symbol: "tray") }
             ForEach(model.shelfURLs, id: \.absoluteString) { url in
                 HStack(spacing: 9) {
@@ -958,6 +988,9 @@ struct NotchPanelView: View {
                     Button { model.removeFile(url) } label: { Image(systemName: "xmark") }.buttonStyle(IconButton())
                 }.padding(9).background(ink.opacity(0.055), in: RoundedRectangle(cornerRadius: 10)).draggable(url)
             }
+        }
+        .fileImporter(isPresented: $shelfState.showingFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { model.addFiles(urls) }
         }
     }
     private var notes: some View {
