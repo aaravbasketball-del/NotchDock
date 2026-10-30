@@ -1,0 +1,1429 @@
+import AppKit
+import Combine
+import SwiftUI
+import UniformTypeIdentifiers
+import IOKit.pwr_mgt
+import AVFoundation
+import ApplicationServices
+
+@MainActor
+final class NotchModel: ObservableObject {
+    @Published var isExpanded = false
+    @Published var selectedTab: NotchTab = .home
+    @Published var note = "" { didSet { UserDefaults.standard.set(note, forKey: "notchdock.quickNote") } }
+    @Published var clips: [Clip] = []
+    @Published var pinnedIDs: Set<UUID> = []
+    @Published var shelfURLs: [URL] = []
+    @Published var clipSearch = ""
+    @Published var timerSeconds = 25 * 60
+    @Published var timerDuration = 25
+    @Published var customTimerDraft = "30"
+    @Published var isEditingCustomTimer = false
+    @Published var isTimerRunning = false
+    @Published var isStopwatchRunning = false
+    @Published var stopwatchStart: Date?
+    @Published var stopwatchElapsed: TimeInterval = 0
+    @Published var keepAwake = false
+    @Published var statusMessage = ""
+    @Published var hudActive = false
+    @Published var hudTitle = ""
+    @Published var hudSymbol = "speaker.wave.2.fill"
+    @Published var hudValue = ""
+    @Published var hudProgress = 0.5
+    @Published var hudMode = "caps"
+    @Published var cameraActive = false
+    @Published var cameraMirrored = true
+    @Published var musicTrackTitle = ""
+    @Published var musicTrackArtist = ""
+    @Published var musicTrackAlbum = ""
+    @Published var musicIsPlaying = false
+    @Published var musicElapsed: TimeInterval = 0
+    @Published var musicDuration: TimeInterval = 0
+    @Published var keyboardLockRemaining = 0
+    var onHUDVisibilityChanged: ((Bool) -> Void)?
+    var onTimerVisibilityChanged: ((Bool) -> Void)?
+    var onMusicVisibilityChanged: ((Bool) -> Void)?
+    /// The notch panel is normally non-activating so hovering never steals
+    /// focus from the app underneath. Custom timer entry is the one case where
+    /// we intentionally make it keyboard-focused.
+    var onRequestKeyboardFocus: (() -> Void)?
+    private var focusTimer: Timer?
+    private var hudTask: Task<Void, Never>?
+    private var poller: AnyCancellable?
+    private var musicPoller: AnyCancellable?
+    private var lastPasteboardChange = -1
+    private var powerAssertion: IOPMAssertionID = 0
+    private let keyboardLock = KeyboardLockController()
+    private var keyboardLockTask: Task<Void, Never>?
+
+    init() {
+        let defaults = UserDefaults.standard
+        note = defaults.string(forKey: "notchdock.quickNote") ?? ""
+        shelfURLs = (defaults.stringArray(forKey: "notchdock.shelf") ?? []).compactMap(URL.init(string:))
+        if let data = defaults.data(forKey: "notchdock.clipData"),
+           let saved = try? JSONDecoder().decode([Clip].self, from: data) {
+            clips = saved
+            pinnedIDs = Set(saved.filter(\.isPinned).map(\.id))
+        }
+        lastPasteboardChange = NSPasteboard.general.changeCount
+        poller = Timer.publish(every: 0.7, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.readPasteboard() }
+        musicPoller = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refreshNowPlaying() }
+        refreshNowPlaying()
+    }
+
+    func readPasteboard() {
+        let board = NSPasteboard.general
+        guard board.changeCount != lastPasteboardChange else { return }
+        lastPasteboardChange = board.changeCount
+        guard let text = board.string(forType: .string), !text.isEmpty,
+              clips.first?.text != text else { return }
+        clips.insert(Clip(text: text), at: 0)
+        clips = Array(clips.prefix(80))
+        saveClips()
+    }
+
+    func copy(_ clip: Clip) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(clip.text, forType: .string)
+        statusMessage = "Copied to clipboard"
+    }
+
+    func togglePin(_ clip: Clip) {
+        if pinnedIDs.contains(clip.id) { pinnedIDs.remove(clip.id) } else { pinnedIDs.insert(clip.id) }
+        saveClips()
+    }
+
+    func clearClips() { clips.removeAll { !pinnedIDs.contains($0.id) }; saveClips() }
+    private func saveClips() {
+        let saved = clips.map { Clip(id: $0.id, text: $0.text, isPinned: pinnedIDs.contains($0.id)) }
+        UserDefaults.standard.set(try? JSONEncoder().encode(saved), forKey: "notchdock.clipData")
+    }
+
+    func addFiles(_ urls: [URL]) {
+        for url in urls where !shelfURLs.contains(url) { shelfURLs.insert(url, at: 0) }
+        UserDefaults.standard.set(shelfURLs.map(\.absoluteString), forKey: "notchdock.shelf")
+    }
+    func removeFile(_ url: URL) {
+        shelfURLs.removeAll { $0 == url }
+        UserDefaults.standard.set(shelfURLs.map(\.absoluteString), forKey: "notchdock.shelf")
+    }
+
+    func startTimer(minutes: Int? = nil) {
+        if let minutes { timerDuration = minutes; timerSeconds = minutes * 60 }
+        guard !isTimerRunning else {
+            isTimerRunning = false
+            focusTimer?.invalidate()
+            focusTimer = nil
+            onTimerVisibilityChanged?(false)
+            return
+        }
+        if timerSeconds == 0 { timerSeconds = timerDuration * 60 }
+        isTimerRunning = true
+        onTimerVisibilityChanged?(true)
+        focusTimer?.invalidate()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
+            Task { @MainActor [weak self] in
+                guard let self else { timer.invalidate(); return }
+                guard self.isTimerRunning else { timer.invalidate(); return }
+                self.timerSeconds = max(0, self.timerSeconds - 1)
+                if self.timerSeconds == 0 {
+                    timer.invalidate()
+                    self.focusTimer = nil
+                    self.finishTimer()
+                }
+            }
+        }
+        focusTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    func resetTimer() {
+        isTimerRunning = false
+        focusTimer?.invalidate()
+        focusTimer = nil
+        onTimerVisibilityChanged?(false)
+        timerSeconds = timerDuration * 60
+    }
+
+    private func finishTimer() {
+        isTimerRunning = false
+        onTimerVisibilityChanged?(false)
+        statusMessage = "Focus session complete"
+        // Use the same compact HUD treatment as Caps Lock, with a more
+        // noticeable completion sound so the finished session is clear even
+        // when the dock is collapsed.
+        showSystemHUD(title: "Focus complete", symbol: "checkmark.circle.fill", value: "DONE", mode: "completion")
+        playCompletionAlert()
+    }
+
+    func beginCustomTimer() {
+        // Start with an empty field so the next keystroke replaces the old
+        // duration naturally. The current duration is shown as the hint in
+        // the field itself.
+        customTimerDraft = ""
+        isEditingCustomTimer = true
+        onRequestKeyboardFocus?()
+    }
+
+    func applyCustomTimer() {
+        let minutes = min(max(Int(customTimerDraft) ?? timerDuration, 1), 240)
+        customTimerDraft = "\(minutes)"
+        timerDuration = minutes
+        timerSeconds = minutes * 60
+        isTimerRunning = false
+        focusTimer?.invalidate()
+        focusTimer = nil
+        onTimerVisibilityChanged?(false)
+        isEditingCustomTimer = false
+    }
+
+    func applyCustomTimerAndStart() {
+        applyCustomTimer()
+        startTimer()
+    }
+
+    private func playCompletionAlert() {
+        // A short three-tone alert is much harder to miss than a single HUD
+        // click, while still staying brief and non-intrusive.
+        Task { @MainActor in
+            for _ in 0..<3 {
+                if let sound = NSSound(named: "Basso") ?? NSSound(named: "Funk") ?? NSSound(named: "Glass") {
+                    sound.volume = 1.0
+                    sound.play()
+                }
+                // Keep the system alert tone as a guaranteed audible backup.
+                NSSound.beep()
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+    }
+
+    func toggleStopwatch() {
+        if isStopwatchRunning {
+            stopwatchElapsed += Date().timeIntervalSince(stopwatchStart ?? .now)
+            stopwatchStart = nil
+        } else { stopwatchStart = .now }
+        isStopwatchRunning.toggle()
+    }
+    var currentStopwatch: TimeInterval { stopwatchElapsed + (isStopwatchRunning ? Date().timeIntervalSince(stopwatchStart ?? .now) : 0) }
+
+    func toggleKeepAwake() {
+        if keepAwake {
+            IOPMAssertionRelease(powerAssertion); powerAssertion = 0; keepAwake = false
+        } else {
+            let result = IOPMAssertionCreateWithName(kIOPMAssertionTypeNoDisplaySleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "NotchDock Keep Awake" as CFString, &powerAssertion)
+            keepAwake = result == kIOReturnSuccess
+            statusMessage = keepAwake ? "Mac will stay awake" : "Could not enable Keep Awake"
+        }
+    }
+
+    private var selectedMusicAppName: String {
+        UserDefaults.standard.bool(forKey: "notchdock.spotifyConnected") ? "Spotify" : "Music"
+    }
+
+    private var selectedMusicBundleID: String {
+        selectedMusicAppName == "Spotify" ? "com.spotify.client" : "com.apple.Music"
+    }
+
+    private var selectedMusicAppIsRunning: Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == selectedMusicBundleID }
+    }
+
+    func runMusicCommand(_ command: String) {
+        let appName = selectedMusicAppName
+        let source = "tell application \"\(appName)\" to " + command
+        if let script = NSAppleScript(source: source) {
+            var error: NSDictionary?
+            script.executeAndReturnError(&error)
+            statusMessage = error == nil ? "Sent to \(appName)" : "Allow NotchDock to control \(appName) in System Settings"
+            if error == nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.refreshNowPlaying()
+                }
+            }
+        }
+    }
+
+    func toggleMusicPlayback() {
+        let appName = selectedMusicAppName
+        if !selectedMusicAppIsRunning {
+            let url = URL(string: appName == "Spotify" ? "spotify:" : "music:")!
+            NSWorkspace.shared.open(url)
+        }
+        // `playpause` only toggles an already-active player in some Spotify
+        // states. Explicit play/pause makes the main play button reliable.
+        runMusicCommand(musicIsPlaying ? "pause" : "play")
+    }
+
+    func refreshNowPlaying() {
+        let appName = selectedMusicAppName
+        guard selectedMusicAppIsRunning else {
+            clearNowPlaying()
+            return
+        }
+
+        let source = """
+        tell application "\(appName)"
+            try
+                set stateText to (player state as text)
+                set trackTitle to name of current track
+                set trackArtist to artist of current track
+                set trackAlbum to album of current track
+                set trackDuration to duration of current track as real
+                set trackPosition to player position as real
+                return stateText & "||" & trackTitle & "||" & trackArtist & "||" & trackAlbum & "||" & (trackDuration as text) & "||" & (trackPosition as text)
+            on error
+                return "stopped||||||||0"
+            end try
+        end tell
+        """
+
+        guard let script = NSAppleScript(source: source) else { return }
+        var error: NSDictionary?
+        let descriptor = script.executeAndReturnError(&error)
+        guard error == nil, let value = descriptor.stringValue else { return }
+        let parts = value.components(separatedBy: "||")
+        guard parts.count >= 6 else { return }
+
+        let state = parts[0].lowercased()
+        let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = parts[3].trimmingCharacters(in: .whitespacesAndNewlines)
+        let duration = Double(parts[4].replacingOccurrences(of: ",", with: ".")) ?? 0
+        let position = Double(parts[5].replacingOccurrences(of: ",", with: ".")) ?? 0
+        let hasTrack = !title.isEmpty && state != "stopped"
+        let wasPlaying = musicIsPlaying
+
+        musicTrackTitle = hasTrack ? title : ""
+        musicTrackArtist = hasTrack ? artist : ""
+        musicTrackAlbum = hasTrack ? album : ""
+        musicIsPlaying = hasTrack && state == "playing"
+        musicDuration = hasTrack ? max(0, duration) : 0
+        musicElapsed = hasTrack ? max(0, min(position, max(duration, position))) : 0
+
+        if wasPlaying != musicIsPlaying {
+            onMusicVisibilityChanged?(musicIsPlaying)
+        }
+    }
+
+    private func clearNowPlaying() {
+        let wasPlaying = musicIsPlaying
+        musicTrackTitle = ""
+        musicTrackArtist = ""
+        musicTrackAlbum = ""
+        musicIsPlaying = false
+        musicElapsed = 0
+        musicDuration = 0
+        if wasPlaying { onMusicVisibilityChanged?(false) }
+    }
+
+    func toggleCamera() { cameraActive.toggle() }
+    func toggleCameraMirror() { cameraMirrored.toggle() }
+
+    var keyboardLocked: Bool { keyboardLockRemaining > 0 }
+
+    func toggleKeyboardLock() {
+        if keyboardLocked {
+            keyboardLock.stop()
+            keyboardLockTask?.cancel()
+            keyboardLockTask = nil
+            keyboardLockRemaining = 0
+            statusMessage = "Keyboard unlocked"
+            return
+        }
+
+        guard keyboardLock.start() else {
+            statusMessage = "Allow Accessibility access to lock the keyboard"
+            return
+        }
+        keyboardLockRemaining = 60
+        statusMessage = "Keyboard locked for 60 seconds"
+        keyboardLockTask?.cancel()
+        keyboardLockTask = Task { @MainActor [weak self] in
+            while let self, self.keyboardLockRemaining > 0, !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                self.keyboardLockRemaining -= 1
+            }
+            if let self, self.keyboardLockRemaining == 0 {
+                self.keyboardLock.stop()
+                self.statusMessage = "Keyboard unlocked"
+            }
+        }
+    }
+
+    func showSystemHUD(title: String, symbol: String, value: String, progress: Double? = nil, mode: String = "caps") {
+        hudTask?.cancel()
+        hudTitle = title
+        hudSymbol = symbol
+        hudValue = value
+        hudProgress = min(max(progress ?? 0.5, 0), 1)
+        hudMode = mode
+        if !hudActive { hudActive = true }
+        // Re-apply the panel frame even when another HUD is already visible;
+        // this guarantees a completion popup replaces an older volume HUD.
+        onHUDVisibilityChanged?(true)
+        hudTask = Task { @MainActor [weak self] in
+            let displayMilliseconds = mode == "completion" ? 5000 : 1150
+            try? await Task.sleep(for: .milliseconds(displayMilliseconds))
+            guard let self, !Task.isCancelled else { return }
+            self.hudActive = false
+            self.onHUDVisibilityChanged?(false)
+        }
+    }
+
+}
+
+struct Clip: Identifiable, Codable {
+    let id: UUID
+    let text: String
+    var isPinned: Bool
+    init(id: UUID = UUID(), text: String, isPinned: Bool = false) { self.id = id; self.text = text; self.isPinned = isPinned }
+}
+
+enum NotchTab: String, CaseIterable, Identifiable {
+    case home = "Home", music = "Music", focus = "Focus", clipboard = "Clipboard", shelf = "Shelf", notes = "Notes", tools = "Tools"
+    var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .home: "square.grid.2x2.fill"; case .music: "waveform"; case .focus: "timer"
+        case .clipboard: "doc.on.clipboard"; case .shelf: "tray.full"; case .notes: "note.text"; case .tools: "slider.horizontal.3"
+        }
+    }
+}
+
+struct NotchPanelView: View {
+    @ObservedObject var model: NotchModel
+    let onHoverChanged: (Bool) -> Void
+    let onDismiss: () -> Void
+    @AppStorage("notchdock.theme") private var themeName = "black"
+    @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
+    @FocusState private var customTimerFieldFocused: Bool
+
+    private var isLightTheme: Bool { themeName == "white" }
+    private var ink: Color { isLightTheme ? .black : .white }
+    private var surface: Color { isLightTheme ? .white : .black }
+    private var isCompactHUD: Bool { model.hudMode == "caps" || model.hudMode == "completion" }
+    private var collapsedPanelWidth: CGFloat {
+        if model.isTimerRunning { return notchDockTimerWidth }
+        if model.musicIsPlaying { return notchDockTimerWidth }
+        return notchDockPanelWidth
+    }
+
+    var body: some View {
+        Group {
+            if model.hudActive {
+                hudView
+            } else {
+                VStack(spacing: 0) {
+                    notchRail
+                    if model.isExpanded { expandedContent.transition(.move(edge: .top).combined(with: .opacity)) }
+                }
+            }
+        }
+        .frame(width: model.hudActive ? (isCompactHUD ? 300 : 380) : (model.isExpanded ? notchDockPanelWidth : collapsedPanelWidth), height: model.hudActive ? (isCompactHUD ? 92 : 114) : (model.isExpanded ? notchDockPanelHeight : notchDockCollapsedHeight), alignment: .top)
+        .background(surface.opacity(0.99))
+        // Keep the rounded Notchy silhouette, with a solid black backing behind
+        // it so the desktop can never show through the corners.
+        .clipShape(panelShape)
+        .overlay(alignment: .top) {
+            // A small, borderless bridge makes the surface feel continuous
+            // with the physical notch instead of stopping abruptly at it.
+            Capsule()
+                .fill(surface)
+                .frame(width: 360, height: 14)
+                .offset(y: -4)
+                .allowsHitTesting(false)
+        }
+        // No outline at the display edge: the surface should merge directly
+        // into the top of the screen instead of showing a grey seam.
+        // Keep the backing inside the same rounded silhouette so no square
+        // rectangle can show through at the corners.
+        .background(surface.opacity(0.99), in: panelShape)
+        .clipShape(panelShape)
+        .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
+        // Match hover detection to the visible rounded surface. Using a
+        // rectangle here keeps the panel "active" over transparent corner
+        // space, which makes it feel like it refuses to close.
+        .compositingGroup()
+        .contentShape(panelShape)
+        .onHover(perform: onHoverChanged)
+        .preferredColorScheme(isLightTheme ? .light : .dark)
+        .animation(.spring(response: 0.34, dampingFraction: 0.84), value: model.isExpanded)
+        .animation(.spring(response: 0.28, dampingFraction: 0.88), value: model.hudActive)
+        .animation(.easeInOut(duration: 0.2), value: model.selectedTab)
+    }
+
+    private var hudView: some View {
+        Group {
+            VStack(spacing: 0) {
+                // The physical notch occupies the top portion of the panel.
+                Color.clear.frame(height: 32)
+                HStack(spacing: 12) {
+                    Image(systemName: model.hudSymbol).font(.system(size: isCompactHUD ? 18 : 16, weight: .semibold)).foregroundStyle(ink.opacity(0.92)).frame(width: 30)
+                    Text(model.hudTitle).font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(ink.opacity(0.78))
+                    Spacer(minLength: 8)
+                    Text(model.hudValue).font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(ink)
+                }.frame(height: 40)
+                if !isCompactHUD {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(ink.opacity(0.13))
+                            Capsule().fill(levelColor).frame(width: max(8, proxy.size.width * model.hudProgress))
+                        }
+                    }.frame(height: 7).padding(.top, 9)
+                    }
+                }
+        }
+        .padding(.horizontal, 20).padding(.bottom, isCompactHUD ? 10 : 17)
+        .frame(width: isCompactHUD ? 300 : 380, height: isCompactHUD ? 92 : 114)
+        .background(surface.opacity(0.99), in: hudShape)
+        .compositingGroup()
+        .clipShape(hudShape)
+        .overlay(alignment: .top) {
+            Capsule()
+                .fill(surface)
+                .frame(width: isCompactHUD ? 230 : 300, height: 12)
+                .offset(y: -3)
+                .allowsHitTesting(false)
+        }
+        // Keep the HUD edge seamless with the display too.
+        .background(surface.opacity(0.99), in: hudShape)
+        .shadow(color: .black.opacity(0.48), radius: 18, y: 10)
+        .transition(.asymmetric(insertion: .scale(scale: 0.72, anchor: .center).combined(with: .opacity), removal: .scale(scale: 0.9).combined(with: .opacity)))
+    }
+
+    private var levelColor: Color {
+        if model.hudMode == "brightness" { return Color(hue: 0.52 - (0.38 * model.hudProgress), saturation: 0.78, brightness: 1) }
+        return Color(hue: 0.34 - (0.34 * model.hudProgress), saturation: 0.8, brightness: 1)
+    }
+
+    private var panelShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(topLeading: 0, bottomLeading: 26, bottomTrailing: 26, topTrailing: 0),
+            style: .continuous
+        )
+    }
+
+    private var hudShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(topLeading: 0, bottomLeading: 24, bottomTrailing: 24, topTrailing: 0),
+            style: .continuous
+        )
+    }
+
+    @ViewBuilder private var notchRail: some View {
+        if model.isTimerRunning && !model.isExpanded {
+            timerStrip
+        } else if model.musicIsPlaying && !model.isExpanded {
+            musicStrip
+        } else {
+        HStack {
+            HStack(spacing: 6) {
+                Image(systemName: "waveform.path").foregroundStyle(ink.opacity(0.72))
+                Text("NOTCHDOCK").tracking(0.8).foregroundStyle(ink.opacity(0.55))
+            }.font(.system(size: 8, weight: .bold, design: .rounded)).frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: 420, height: 1)
+            HStack(spacing: 9) {
+                if model.isTimerRunning { Text(timerString).font(.system(size: 10, weight: .semibold, design: .rounded)).monospacedDigit() }
+                Button { onDismiss() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.62)).frame(width: 22, height: 22).background(ink.opacity(0.09), in: Circle()) }.buttonStyle(.plain)
+            }.foregroundStyle(ink).frame(maxWidth: .infinity, alignment: .trailing)
+        }.padding(.horizontal, 22).frame(height: 40)
+        }
+    }
+
+    private var timerStrip: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().stroke(ink.opacity(0.18), lineWidth: 2).padding(2)
+                Circle()
+                    .trim(from: 0, to: timerProgress)
+                    .stroke(ink.opacity(0.92), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .padding(2)
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: "timer")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ink.opacity(0.76))
+            }
+            .frame(width: 24, height: 24)
+            Spacer(minLength: 8)
+            Text(timerString)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(ink)
+        }
+        .offset(y: 6)
+        .padding(.horizontal, 18)
+        .frame(width: notchDockTimerWidth, height: notchDockCollapsedHeight)
+        .background(ink.opacity(0.1), in: Capsule())
+        .overlay(Capsule().stroke(ink.opacity(0.13), lineWidth: 1))
+    }
+
+    private var musicStrip: some View {
+        HStack(spacing: 12) {
+            Text(musicElapsedString)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(ink)
+            Spacer(minLength: 8)
+            ZStack {
+                Circle().stroke(ink.opacity(0.18), lineWidth: 2).padding(2)
+                Circle()
+                    .trim(from: 0, to: musicProgress)
+                    .stroke(ink.opacity(0.92), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .padding(2)
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: "music.note")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ink.opacity(0.76))
+            }
+            .frame(width: 24, height: 24)
+        }
+        .offset(y: 6)
+        .padding(.horizontal, 18)
+        .frame(width: notchDockTimerWidth, height: notchDockCollapsedHeight)
+        .background(ink.opacity(0.1), in: Capsule())
+        .overlay(Capsule().stroke(ink.opacity(0.13), lineWidth: 1))
+    }
+
+    private var expandedContent: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.selectedTab.rawValue).font(.system(size: 22, weight: .semibold, design: .rounded))
+                    Text("A useful little space in your notch").font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                }
+                Spacer()
+                if model.selectedTab == .tools {
+                    Button(model.keyboardLocked ? "Unlock \(model.keyboardLockRemaining)s" : "Lock keyboard 60s") {
+                        model.toggleKeyboardLock()
+                    }
+                    .buttonStyle(AccentButton())
+                }
+                if model.selectedTab == .focus {
+                    Button("Custom timer") { model.beginCustomTimer() }
+                        .buttonStyle(AccentButton())
+                }
+                if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
+            }.padding(.horizontal, 21).padding(.top, 16).padding(.bottom, 14)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(NotchTab.allCases) { tab in
+                        Button { model.selectedTab = tab } label: {
+                            Label(tab.rawValue, systemImage: tab.symbol).font(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .background(model.selectedTab == tab ? ink.opacity(0.17) : ink.opacity(0.055), in: Capsule())
+                                .foregroundStyle(ink.opacity(model.selectedTab == tab ? 1 : 0.64))
+                        }.buttonStyle(.plain)
+                    }
+                    Button("Custom timer") {
+                        model.selectedTab = .focus
+                        model.beginCustomTimer()
+                    }
+                    .buttonStyle(AccentButton())
+                }.padding(.horizontal, 18)
+            }.padding(.bottom, 12)
+
+            ScrollView(showsIndicators: false) {
+                Group {
+                    switch model.selectedTab {
+                    case .home: home; case .music: music; case .focus: focus
+                    case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
+                    }
+                }.padding(.horizontal, 18).padding(.bottom, 16)
+            }
+        }.frame(width: notchDockPanelWidth, height: notchDockPanelHeight - 40, alignment: .top)
+    }
+
+    private var home: some View {
+        VStack(spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                nowPlayingDashboard
+                    .frame(maxWidth: .infinity, minHeight: 245, maxHeight: 245, alignment: .topLeading)
+                focusDashboard
+                    .frame(maxWidth: .infinity, minHeight: 245, maxHeight: 245, alignment: .topLeading)
+                upNextDashboard
+                    .frame(maxWidth: .infinity, minHeight: 245, maxHeight: 245, alignment: .topLeading)
+            }
+            HStack(alignment: .top, spacing: 14) {
+                quickNoteDashboard
+                    .frame(maxWidth: .infinity, minHeight: 145, maxHeight: 145, alignment: .topLeading)
+                systemDashboard
+                    .frame(maxWidth: .infinity, minHeight: 145, maxHeight: 145, alignment: .topLeading)
+                cameraDashboard
+                    .frame(maxWidth: .infinity, minHeight: 145, maxHeight: 145, alignment: .topLeading)
+                shelfDashboard
+                    .frame(maxWidth: .infinity, minHeight: 145, maxHeight: 145, alignment: .topLeading)
+            }
+        }
+    }
+
+    private var nowPlayingDashboard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            dashboardHeader(spotifyConnected ? "Spotify" : "Now Playing", symbol: "music.note")
+            if model.musicTrackTitle.isEmpty {
+                Text(spotifyConnected ? "Spotify controls" : "Apple Music controls")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.82))
+                Text("Nothing playing")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ink.opacity(0.48))
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.musicTrackTitle)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.9))
+                        .lineLimit(2)
+                    Text(model.musicTrackArtist.isEmpty ? "Unknown artist" : model.musicTrackArtist)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(ink.opacity(0.62))
+                        .lineLimit(1)
+                    if !model.musicTrackAlbum.isEmpty {
+                        Text(model.musicTrackAlbum)
+                            .font(.system(size: 11))
+                            .foregroundStyle(ink.opacity(0.42))
+                            .lineLimit(1)
+                    }
+                    if !model.musicIsPlaying {
+                        Text("Paused")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(ink.opacity(0.42))
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            HStack(spacing: 9) {
+                transport("backward.end.fill", command: "previous track")
+                transport("playpause.fill", command: "playpause")
+                transport("forward.end.fill", command: "next track")
+                Spacer()
+                Button(spotifyConnected ? "Open Spotify" : "Open Music") {
+                    let url = URL(string: spotifyConnected ? "spotify:" : "music:")!
+                    NSWorkspace.shared.open(url)
+                }.buttonStyle(ChipButton())
+            }
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var focusDashboard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            dashboardHeader("Focus", symbol: "timer")
+            Spacer(minLength: 2)
+            Text(model.isTimerRunning ? timerString : "25:00")
+                .font(.system(size: 48, weight: .light, design: .rounded))
+                .monospacedDigit()
+            Text(model.isTimerRunning ? "Session in progress" : "Ready when you are")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(ink.opacity(0.48))
+            Spacer(minLength: 4)
+            HStack(spacing: 8) {
+                Button(model.isTimerRunning ? "Pause" : "Start") { model.startTimer(minutes: 25) }.buttonStyle(AccentButton())
+                Button("45 min") { model.startTimer(minutes: 45) }.buttonStyle(ChipButton())
+                Button("60 min") { model.startTimer(minutes: 60) }.buttonStyle(ChipButton())
+            }
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var upNextDashboard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            dashboardHeader("Up Next", symbol: "calendar.badge.clock")
+            Spacer()
+            VStack(spacing: 10) {
+                Image(systemName: "checkmark.circle").font(.system(size: 34, weight: .medium)).foregroundStyle(ink.opacity(0.48))
+                Text("All clear").font(.system(size: 15, weight: .semibold)).foregroundStyle(ink.opacity(0.68))
+                Text("No upcoming focus sessions").font(.system(size: 11)).foregroundStyle(ink.opacity(0.42))
+            }.frame(maxWidth: .infinity)
+            Spacer()
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var quickNoteDashboard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            dashboardHeader("Quick Note", symbol: "note.text")
+            Text(model.note.isEmpty ? "Capture a thought" : model.note)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(ink.opacity(0.72))
+                .lineLimit(2)
+            Spacer()
+            Button("Open notes") { model.selectedTab = .notes }.buttonStyle(ChipButton())
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var systemDashboard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            dashboardHeader("System", symbol: "gauge.with.dots.needle.67percent")
+            HStack(spacing: 24) {
+                dashboardMetric("Clipboard", value: "\(model.clips.count)", symbol: "doc.on.clipboard")
+                dashboardMetric("Shelf", value: "\(model.shelfURLs.count)", symbol: "tray.full")
+                dashboardMetric("HUDs", value: "Ready", symbol: "sparkles")
+            }
+            Spacer()
+            Text("System indicators are available from the notch.").font(.system(size: 11)).foregroundStyle(ink.opacity(0.42))
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var shelfDashboard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            dashboardHeader("File Shelf", symbol: "tray.full")
+            Text(model.shelfURLs.isEmpty ? "Nothing staged" : "\(model.shelfURLs.count) item\(model.shelfURLs.count == 1 ? "" : "s") ready")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.76))
+            Spacer()
+            Button("Open shelf") { model.selectedTab = .shelf }.buttonStyle(ChipButton())
+        }
+        .dashboardSurface(ink: ink)
+    }
+
+    private var cameraDashboard: some View {
+        ZStack(alignment: .topLeading) {
+            Group {
+                GeometryReader { proxy in
+                    Group {
+                        if model.cameraActive {
+                            CameraPreview(isActive: true, isMirrored: model.cameraMirrored)
+                        } else {
+                            VStack(spacing: 8) {
+                                Image(systemName: "camera").font(.system(size: 28)).foregroundStyle(ink.opacity(0.46))
+                                Text("Click to start camera").font(.system(size: 11, weight: .medium)).foregroundStyle(ink.opacity(0.52))
+                            }
+                        }
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { model.toggleCamera() }
+
+            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 54)
+                .allowsHitTesting(false)
+
+            HStack {
+                dashboardHeader("Camera", symbol: "camera")
+                    .foregroundStyle(.white)
+                Spacer()
+                if model.cameraActive {
+                    HStack(spacing: 6) {
+                        Button { model.toggleCamera() } label: {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 25, height: 25)
+                                .background(.black.opacity(0.62), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        Button { model.toggleCameraMirror() } label: {
+                            Image(systemName: "arrow.left.and.right")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 25, height: 25)
+                                .background(.black.opacity(0.62), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(12)
+        }
+        .frame(maxWidth: .infinity, minHeight: 145, maxHeight: 145)
+        .background(ink.opacity(0.075), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(ink.opacity(0.1), lineWidth: 1) }
+    }
+
+    private func dashboardHeader(_ title: String, symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.system(size: 16, weight: .semibold, design: .rounded))
+            .foregroundStyle(ink.opacity(0.82))
+    }
+
+    private func dashboardMetric(_ title: String, value: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(ink.opacity(0.56))
+            Text(value).font(.system(size: 17, weight: .semibold, design: .rounded))
+            Text(title).font(.system(size: 10)).foregroundStyle(ink.opacity(0.42))
+        }
+    }
+
+    private var music: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 13) {
+                Image(systemName: "music.note").font(.system(size: 21)).foregroundStyle(ink).frame(width: 54, height: 54).background(LinearGradient(colors: [.purple.opacity(0.8), .blue.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 13))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.musicTrackTitle.isEmpty ? (spotifyConnected ? "Spotify" : "Apple Music") : model.musicTrackTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    Text(model.musicTrackTitle.isEmpty ? "Nothing playing" : (model.musicTrackArtist.isEmpty ? "Unknown artist" : model.musicTrackArtist))
+                        .font(.system(size: 10))
+                        .foregroundStyle(ink.opacity(0.5))
+                        .lineLimit(1)
+                }
+                Spacer()
+                transport("backward.end.fill", command: "previous track"); transport("playpause.fill", command: "playpause"); transport("forward.end.fill", command: "next track")
+            }.card()
+            Label(spotifyConnected ? "Spotify controls are active for this notch." : "Media controls target Apple Music.", systemImage: "info.circle").font(.system(size: 10)).foregroundStyle(ink.opacity(0.48)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 4)
+        }
+    }
+    private var focus: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "timer").font(.system(size: 17, weight: .semibold)).frame(width: 38, height: 38).background(ink.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Custom timer").font(.system(size: 12, weight: .semibold))
+                    Text("Choose any duration from 1 to 240 minutes").font(.system(size: 10)).foregroundStyle(ink.opacity(0.48))
+                }
+                Spacer()
+                Button("Set custom minutes") { model.beginCustomTimer() }.buttonStyle(AccentButton())
+            }.card()
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) { Text("Focus session").font(.system(size: 13, weight: .semibold)); Text("Choose a pace, then get into it").font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)) }
+                Spacer()
+                Text(timerString).font(.system(size: 40, weight: .light, design: .rounded)).monospacedDigit()
+            }.card()
+            HStack(spacing: 8) {
+                ForEach([25, 45, 60], id: \.self) { mins in Button("\(mins) min") { model.startTimer(minutes: mins) }.buttonStyle(ChipButton()) }
+                Button("Custom timer") { model.beginCustomTimer() }.buttonStyle(AccentButton())
+                Spacer()
+                Button { model.startTimer() } label: { Label(model.isTimerRunning ? "Pause" : "Start", systemImage: model.isTimerRunning ? "pause.fill" : "play.fill") }.buttonStyle(AccentButton())
+                Button { model.resetTimer() } label: { Image(systemName: "arrow.counterclockwise") }.buttonStyle(ChipButton())
+            }
+            if model.isEditingCustomTimer {
+                HStack(spacing: 8) {
+                    Label("Custom minutes", systemImage: "timer")
+                    TextField("\(model.timerDuration)", text: $model.customTimerDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 78)
+                        .focused($customTimerFieldFocused)
+                        .onSubmit { model.applyCustomTimerAndStart() }
+                        .onChange(of: model.customTimerDraft) { value in
+                            let filtered = value.filter(\.isNumber)
+                            if filtered != value { model.customTimerDraft = filtered }
+                        }
+                    Button("Set & start") { model.applyCustomTimerAndStart() }.buttonStyle(AccentButton())
+                    Button("Cancel") { model.isEditingCustomTimer = false }.buttonStyle(ChipButton())
+                    Spacer()
+                }
+                .card()
+                .onAppear { customTimerFieldFocused = true }
+                .onChange(of: model.isEditingCustomTimer) { editing in
+                    customTimerFieldFocused = editing
+                }
+            }
+            HStack {
+                Label("Stopwatch", systemImage: "stopwatch").font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(stopwatchString).font(.system(size: 15, weight: .medium, design: .rounded)).monospacedDigit()
+                Button(model.isStopwatchRunning ? "Pause" : "Start") { model.toggleStopwatch() }.buttonStyle(ChipButton())
+            }.card()
+            Button { model.toggleKeepAwake() } label: { Label(model.keepAwake ? "Keep Awake is on" : "Keep Mac Awake", systemImage: model.keepAwake ? "sun.max.fill" : "moon.zzz") }.buttonStyle(ChipButton()).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private var clipboard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack { TextField("Search copied text", text: $model.clipSearch).textFieldStyle(.plain).padding(10).background(ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 10)); Button("Clear") { model.clearClips() }.buttonStyle(ChipButton()) }
+            let filtered = model.clips.filter { model.clipSearch.isEmpty || $0.text.localizedCaseInsensitiveContains(model.clipSearch) }
+            if filtered.isEmpty { emptyState("Copied text will appear here", symbol: "doc.on.clipboard") }
+            ForEach(filtered) { clip in
+                HStack(spacing: 8) {
+                    Text(clip.text).font(.system(size: 11)).lineLimit(2).foregroundStyle(ink.opacity(0.82)).frame(maxWidth: .infinity, alignment: .leading)
+                    Button { model.copy(clip) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(IconButton())
+                    Button { model.togglePin(clip) } label: { Image(systemName: model.pinnedIDs.contains(clip.id) ? "pin.fill" : "pin") }.buttonStyle(IconButton())
+                }.padding(10).background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+            }
+            Text("Clipboard monitoring stays on this Mac. Copies are kept locally.").font(.system(size: 9)).foregroundStyle(ink.opacity(0.4))
+        }
+    }
+    private var shelf: some View {
+        VStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 14).fill(ink.opacity(0.035)).overlay {
+                VStack(spacing: 8) { Image(systemName: "arrow.down.doc").font(.system(size: 23)).foregroundStyle(ink.opacity(0.7)); Text("Drop files here to keep them handy").font(.system(size: 11)).foregroundStyle(ink.opacity(0.58)); Text("Files stay in their original folders").font(.system(size: 9)).foregroundStyle(ink.opacity(0.37)) }
+            }.frame(height: 100).overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(ink.opacity(0.16), style: StrokeStyle(lineWidth: 1, dash: [5, 4])) }
+                .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
+                    for provider in providers { _ = provider.loadObject(ofClass: NSURL.self) { object, _ in if let nsurl = object as? NSURL { let url = nsurl as URL; Task { @MainActor in model.addFiles([url]) } } } }
+                    return !providers.isEmpty
+                }
+            if model.shelfURLs.isEmpty { emptyState("Your staged files appear here", symbol: "tray") }
+            ForEach(model.shelfURLs, id: \.absoluteString) { url in
+                HStack(spacing: 9) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 27, height: 27)
+                    VStack(alignment: .leading, spacing: 3) { Text(url.lastPathComponent).font(.system(size: 11, weight: .medium)).lineLimit(1); Text(url.deletingLastPathComponent().path).font(.system(size: 9)).foregroundStyle(ink.opacity(0.4)).lineLimit(1) }
+                    Spacer()
+                    Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "arrow.up.right.square") }.buttonStyle(IconButton())
+                    Button { model.removeFile(url) } label: { Image(systemName: "xmark") }.buttonStyle(IconButton())
+                }.padding(9).background(ink.opacity(0.055), in: RoundedRectangle(cornerRadius: 10)).draggable(url)
+            }
+        }
+    }
+    private var notes: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Saved on this Mac as you type.").font(.system(size: 10)).foregroundStyle(ink.opacity(0.48))
+            TextEditor(text: $model.note).font(.system(size: 13)).scrollContentBackground(.hidden).foregroundStyle(ink).padding(10).frame(height: 260).background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 13))
+        }
+    }
+    private var tools: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: model.keyboardLocked ? "lock.fill" : "keyboard")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .background(ink.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Keyboard Lock").font(.system(size: 12, weight: .semibold))
+                    Text(model.keyboardLocked ? "Unlocks in \(model.keyboardLockRemaining)s" : "Disable keyboard input for 60 seconds")
+                        .font(.system(size: 10)).foregroundStyle(ink.opacity(0.48))
+                }
+                Spacer()
+                Button(model.keyboardLocked ? "Unlock" : "Lock 60s") { model.toggleKeyboardLock() }.buttonStyle(AccentButton())
+            }.card()
+            Text("Available now").font(.system(size: 12, weight: .semibold))
+            HStack { toolRow("Keep Awake", detail: "Prevent sleep while enabled", symbol: "moon.zzz") { model.toggleKeepAwake() }; Spacer(); Toggle("", isOn: Binding(get: { model.keepAwake }, set: { _ in model.toggleKeepAwake() })).labelsHidden().toggleStyle(.switch) }.card()
+        }
+    }
+
+    private var musicCard: some View { HStack(spacing: 12) {
+        Image(systemName: "music.note").font(.system(size: 17)).foregroundStyle(ink).frame(width: 42, height: 42).background(ink.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.musicTrackTitle.isEmpty ? "Music controls" : model.musicTrackTitle)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            Text(model.musicTrackTitle.isEmpty ? (spotifyConnected ? "Control Spotify from the notch" : "Control Apple Music from the notch") : (model.musicTrackArtist.isEmpty ? "Unknown artist" : model.musicTrackArtist))
+                .font(.system(size: 10))
+                .foregroundStyle(ink.opacity(0.47))
+                .lineLimit(1)
+        }
+        Spacer(); transport("backward.end.fill", command: "previous track"); transport("playpause.fill", command: "playpause"); transport("forward.end.fill", command: "next track")
+    }.card() }
+    private var focusMini: some View { VStack(alignment: .leading, spacing: 7) { Label("FOCUS TIMER", systemImage: "timer").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.52)); Text(model.isTimerRunning ? timerString : "25:00").font(.system(size: 23, weight: .medium, design: .rounded)).monospacedDigit(); Button(model.isTimerRunning ? "Pause" : "Start 25 min") { model.startTimer(minutes: 25) }.buttonStyle(ChipButton()) }.frame(maxWidth: .infinity, alignment: .leading).card() }
+    private var noteMini: some View { VStack(alignment: .leading, spacing: 7) { Label("QUICK NOTE", systemImage: "note.text").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.52)); Text(model.note.isEmpty ? "Capture a thought" : model.note).font(.system(size: 11)).lineLimit(2).foregroundStyle(ink.opacity(0.76)); Button("Open notes") { model.selectedTab = .notes }.buttonStyle(ChipButton()) }.frame(maxWidth: .infinity, alignment: .leading).card() }
+    private var timerString: String { String(format: "%02d:%02d", model.timerSeconds / 60, model.timerSeconds % 60) }
+    private var musicElapsedString: String {
+        let elapsed = max(0, Int(model.musicElapsed))
+        return String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+    }
+    private var timerProgress: Double {
+        let total = max(model.timerDuration * 60, 1)
+        return min(max(Double(model.timerSeconds) / Double(total), 0), 1)
+    }
+    private var musicProgress: Double {
+        guard model.musicDuration > 0 else { return 0 }
+        return min(max(model.musicElapsed / model.musicDuration, 0), 1)
+    }
+    private var stopwatchString: String { let s = Int(model.currentStopwatch); return String(format: "%02d:%02d", s / 60, s % 60) }
+    private func transport(_ symbol: String, command: String) -> some View { Button {
+        if command == "playpause" { model.toggleMusicPlayback() } else { model.runMusicCommand(command) }
+    } label: {
+        Image(systemName: command == "playpause" && model.musicIsPlaying ? "pause.fill" : (command == "playpause" ? "play.fill" : symbol))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ink)
+            .frame(width: 31, height: 31)
+            .background(ink.opacity(0.09), in: Circle())
+    }.buttonStyle(.plain) }
+    private func metricCard(_ title: String, value: String, symbol: String, action: @escaping () -> Void) -> some View { Button(action: action) { VStack(alignment: .leading, spacing: 8) { Image(systemName: symbol).foregroundStyle(ink.opacity(0.62)); Text(value).font(.system(size: 18, weight: .semibold, design: .rounded)); Text(title).font(.system(size: 9)).foregroundStyle(ink.opacity(0.48)) }.frame(maxWidth: .infinity, alignment: .leading).card() }.buttonStyle(.plain) }
+    private func toolRow(_ title: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View { Button(action: action) { Label { VStack(alignment: .leading, spacing: 3) { Text(title).font(.system(size: 11, weight: .medium)); Text(detail).font(.system(size: 9)).foregroundStyle(ink.opacity(0.43)) } } icon: { Image(systemName: symbol).foregroundStyle(ink.opacity(0.65)) } }.buttonStyle(.plain) }
+    private func emptyState(_ title: String, symbol: String) -> some View { VStack(spacing: 8) { Image(systemName: symbol).font(.system(size: 22)).foregroundStyle(ink.opacity(0.34)); Text(title).font(.system(size: 10)).foregroundStyle(ink.opacity(0.42)) }.frame(maxWidth: .infinity).padding(.vertical, 25) }
+}
+
+private struct ChipButton: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    var ink: Color { colorScheme == .light ? .black : .white }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 10, weight: .medium)).foregroundStyle(ink.opacity(configuration.isPressed ? 0.55 : 0.8)).padding(.horizontal, 10).padding(.vertical, 7).background(ink.opacity(configuration.isPressed ? 0.12 : 0.07), in: Capsule())
+    }
+}
+private struct AccentButton: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    var ink: Color { colorScheme == .light ? .white : .black }
+    var fill: Color { colorScheme == .light ? .black : .white }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 10, weight: .semibold)).foregroundStyle(ink).padding(.horizontal, 13).padding(.vertical, 8).background(fill.opacity(configuration.isPressed ? 0.7 : 0.95), in: Capsule())
+    }
+}
+private struct IconButton: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    var ink: Color { colorScheme == .light ? .black : .white }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 10)).foregroundStyle(ink.opacity(0.65)).frame(width: 26, height: 26).background(ink.opacity(configuration.isPressed ? 0.13 : 0.06), in: Circle())
+    }
+}
+private struct CardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    var ink: Color { colorScheme == .light ? .black : .white }
+    func body(content: Content) -> some View {
+        content.padding(13).frame(maxWidth: .infinity, alignment: .leading).background(ink.opacity(0.065), in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+private struct DashboardSurfaceModifier: ViewModifier {
+    let ink: Color
+    func body(content: Content) -> some View {
+        content
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(ink.opacity(0.075), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+    }
+}
+private extension View {
+    func card() -> some View { modifier(CardModifier()) }
+    func dashboardSurface(ink: Color) -> some View { modifier(DashboardSurfaceModifier(ink: ink)) }
+}
+
+struct CameraPreview: NSViewRepresentable {
+    let isActive: Bool
+    let isMirrored: Bool
+
+    func makeNSView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        view.setActive(isActive)
+        view.setMirrored(isMirrored)
+        return view
+    }
+
+    func updateNSView(_ nsView: CameraPreviewView, context: Context) {
+        nsView.setActive(isActive)
+        nsView.setMirrored(isMirrored)
+        nsView.updatePreviewFrame()
+    }
+}
+
+final class CameraPreviewView: NSView {
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "notchdock.camera.session")
+    private let previewLayer = AVCaptureVideoPreviewLayer()
+    private var configured = false
+    private var active = false
+    private var mirrored = true
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        previewLayer.videoGravity = .resizeAspectFill
+        layer?.addSublayer(previewLayer)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        updatePreviewFrame()
+    }
+
+    func updatePreviewFrame() { previewLayer.frame = bounds }
+
+    func setActive(_ active: Bool) {
+        self.active = active
+        if active {
+            requestAccessAndConfigure()
+        } else {
+            sessionQueue.async { [weak self] in self?.session.stopRunning() }
+        }
+    }
+
+    func setMirrored(_ mirrored: Bool) {
+        self.mirrored = mirrored
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let connection = self.previewLayer.connection, connection.isVideoMirroringSupported else { return }
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = mirrored
+        }
+    }
+
+    private func requestAccessAndConfigure() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            configureSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard granted else { return }
+                self?.configureSession()
+            }
+        default:
+            break
+        }
+    }
+
+    private func configureSession() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.configured else { return }
+            guard let camera = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: camera),
+                  self.session.canAddInput(input) else { return }
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .high
+            self.session.addInput(input)
+            self.session.commitConfiguration()
+            self.configured = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.previewLayer.session = self.session
+                self.setMirrored(self.mirrored)
+                if self.active { self.sessionQueue.async { [weak self] in self?.session.startRunning() } }
+            }
+        }
+    }
+
+    deinit {
+        sessionQueue.async { [session] in session.stopRunning() }
+    }
+}
+
+final class KeyboardLockController {
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private(set) var isLocked = false
+
+    func start() -> Bool {
+        guard eventTap == nil else { return true }
+
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(options) else { return false }
+
+        let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
+            | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+            | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+        let pointer = Unmanaged.passUnretained(self).toOpaque()
+        let callback: CGEventTapCallBack = { _, type, event, refcon in
+            guard let refcon else { return Unmanaged.passUnretained(event) }
+            let controller = Unmanaged<KeyboardLockController>.fromOpaque(refcon).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = controller.eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
+            return controller.isLocked ? nil : Unmanaged.passUnretained(event)
+        }
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: pointer
+        ) else { return false }
+
+        eventTap = tap
+        isLocked = true
+        if let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) {
+            runLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        return true
+    }
+
+    func stop() {
+        isLocked = false
+        if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        runLoopSource = nil
+        eventTap = nil
+    }
+}
+
+struct SettingsView: View {
+    @AppStorage("notchdock.closeDelay") private var closeDelay = 0.12
+    @AppStorage("notchdock.systemHUDsEnabled") private var systemHUDsEnabled = true
+    @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
+    @AppStorage("notchdock.theme") private var themeName = "black"
+    @StateObject private var updater = NotchUpdater()
+
+    private var isLightTheme: Bool { themeName == "white" }
+    private var ink: Color { isLightTheme ? .black : .white }
+    private var surface: Color { isLightTheme ? .white : Color(red: 0.08, green: 0.08, blue: 0.09) }
+
+    var body: some View {
+        TabView {
+            generalTab
+                .tabItem { Label("General", systemImage: "gearshape") }
+            integrationsTab
+                .tabItem { Label("Integrations", systemImage: "puzzlepiece.extension") }
+            shortcutsTab
+                .tabItem { Label("Shortcuts", systemImage: "command") }
+        }
+        .padding(.top, 8)
+        .frame(minWidth: 620, minHeight: 430)
+        .background(surface)
+        .preferredColorScheme(isLightTheme ? .light : .dark)
+        .onAppear { updater.checkForUpdates() }
+    }
+
+    private var generalTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                settingsHeader("General", subtitle: "Make NotchDock feel right on your Mac.")
+                updateBanner
+                settingsSection("Hover behavior") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Close delay", systemImage: "cursorarrow.rays")
+                            Spacer()
+                            Text("\(Int(closeDelay * 1000)) ms").foregroundStyle(ink.opacity(0.56)).monospacedDigit()
+                        }
+                        Slider(value: $closeDelay, in: 0.05...0.35, step: 0.01)
+                            .tint(ink)
+                        Text("A tiny delay prevents accidental closes when you skim the edge of the notch.")
+                            .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                    }
+                }
+                settingsSection("System indicators") {
+                    Toggle(isOn: $systemHUDsEnabled) {
+                        Label("Show volume, brightness, and Caps Lock HUDs", systemImage: "speaker.wave.2")
+                    }
+                    .toggleStyle(.switch)
+                }
+                settingsSection("Appearance") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Theme", systemImage: "circle.lefthalf.filled")
+                        HStack(spacing: 8) {
+                            themeButton("Black", value: "black")
+                            themeButton("White", value: "white")
+                        }
+                    }
+                }
+            }
+            .padding(26)
+        }
+    }
+
+    private var integrationsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                settingsHeader("Integrations", subtitle: "Connect the services you want to control from the notch.")
+                settingsSection("Music") {
+                    integrationRow(
+                        title: "Spotify",
+                        detail: spotifyConnected ? "Ready to open from NotchDock" : "Open Spotify and finish sign-in there",
+                        symbol: "music.note",
+                        connected: spotifyConnected,
+                        actionTitle: spotifyConnected ? "Disconnect" : "Connect"
+                    ) {
+                        if spotifyConnected {
+                            spotifyConnected = false
+                        } else {
+                            let appURL = URL(string: "spotify:")!
+                            let webURL = URL(string: "https://open.spotify.com")!
+                            if !NSWorkspace.shared.open(appURL) { NSWorkspace.shared.open(webURL) }
+                            spotifyConnected = true
+                        }
+                    }
+                    if spotifyConnected { Text("Spotify was opened. Finish signing in in the Spotify app if needed.").font(.system(size: 11)).foregroundStyle(ink.opacity(0.5)) }
+                    Text("When Spotify is connected, the Music tab sends play, pause, previous, and next commands to Spotify. Apple Music remains available when Spotify is disconnected.")
+                        .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                }
+                settingsSection("Available now") {
+                    integrationRow(title: "Apple Music", detail: "Playback controls are ready", symbol: "applelogo", connected: true, actionTitle: "Ready") {}
+                }
+            }
+            .padding(26)
+        }
+    }
+
+    private var shortcutsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                settingsHeader("Shortcuts", subtitle: "Quick ways to reach NotchDock.")
+                settingsSection("Menu bar") {
+                    shortcutRow("Open NotchDock", keys: "Menu bar icon")
+                    shortcutRow("Open Settings", keys: "⌘ ,")
+                }
+                settingsSection("Coming next") {
+                    Text("Custom keyboard shortcuts and per-feature visibility controls will appear here as those integrations are enabled.")
+                        .font(.system(size: 11)).foregroundStyle(ink.opacity(0.52))
+                }
+            }
+            .padding(26)
+        }
+    }
+
+    private func settingsHeader(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 24, weight: .bold, design: .rounded))
+            Text(subtitle).font(.system(size: 12)).foregroundStyle(ink.opacity(0.5))
+        }
+    }
+
+    private var updateBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: updater.updateAvailable ? "arrow.down.circle.fill" : "sparkles")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.white)
+                .frame(width: 36, height: 36)
+                .background(Color.blue, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(updater.updateAvailable ? "New NotchDock update" : "Keep NotchDock up to date")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(updater.errorText ?? updater.statusText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(ink.opacity(0.5))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(updater.updateButtonTitle) {
+                if updater.updateAvailable { updater.installLatest() } else { updater.checkForUpdates() }
+            }
+            .buttonStyle(UpdateButtonStyle())
+            .disabled(updater.isChecking || updater.isInstalling)
+        }
+        .padding(12)
+        .background(Color.blue.opacity(isLightTheme ? 0.09 : 0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func settingsSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(title.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.8).foregroundStyle(ink.opacity(0.45))
+            content().padding(15).frame(maxWidth: .infinity, alignment: .leading).background(ink.opacity(0.065), in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private func integrationRow(title: String, detail: String, symbol: String, connected: Bool, actionTitle: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).frame(width: 38, height: 38).background(ink.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(detail).font(.system(size: 10)).foregroundStyle(ink.opacity(0.48))
+            }
+            Spacer()
+            Button(actionTitle, action: action).buttonStyle(AccentButton())
+        }
+    }
+
+    private func shortcutRow(_ title: String, keys: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 12, weight: .medium))
+            Spacer()
+            Text(keys).font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(ink.opacity(0.52)).padding(.horizontal, 9).padding(.vertical, 5).background(ink.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+        }
+    }
+
+    private func themeButton(_ title: String, value: String) -> some View {
+        Button {
+            themeName = value
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .foregroundStyle(themeName == value ? (isLightTheme ? .white : .black) : ink.opacity(0.72))
+                .background(themeName == value ? (isLightTheme ? Color.black : Color.white) : ink.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct UpdateButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.blue.opacity(configuration.isPressed ? 0.72 : 0.95), in: Capsule())
+    }
+}

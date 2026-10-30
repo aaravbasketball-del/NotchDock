@@ -1,0 +1,59 @@
+name: Release NotchDock
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build universal app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .build/release .release/NotchDock.app/Contents/MacOS .release/NotchDock.app/Contents/Resources
+          xcrun --sdk macosx swiftc -parse-as-library -module-cache-path .build/module-cache \
+            -target arm64-apple-macosx13.0 \
+            -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
+            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices \
+            Sources/NotchDock/*.swift -o .build/release/NotchDock-arm64
+          xcrun --sdk macosx swiftc -parse-as-library -module-cache-path .build/module-cache \
+            -target x86_64-apple-macosx13.0 \
+            -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
+            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices \
+            Sources/NotchDock/*.swift -o .build/release/NotchDock-x86_64
+          lipo -create .build/release/NotchDock-arm64 .build/release/NotchDock-x86_64 \
+            -output .release/NotchDock.app/Contents/MacOS/NotchDock
+          cp Packaging/Info.plist .release/NotchDock.app/Contents/Info.plist
+          cp Assets/NotchDock.icns .release/NotchDock.app/Contents/Resources/NotchDock.icns
+          codesign --force --deep --options runtime --sign - .release/NotchDock.app
+          codesign --verify --deep --strict .release/NotchDock.app
+
+      - name: Package installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release/NotchDock-DMG/.background
+          ditto .release/NotchDock.app .release/NotchDock-DMG/NotchDock.app
+          ln -s /Applications .release/NotchDock-DMG/Applications
+          cp Assets/NotchDock-dmg-background.png .release/NotchDock-DMG/.background/install.png
+          hdiutil create -volname NotchDock -srcfolder .release/NotchDock-DMG -ov -format UDZO .release/NotchDock.dmg
+          ditto -c -k --sequesterRsrc --keepParent .release/NotchDock.app .release/NotchDock.zip
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            .release/NotchDock.dmg \
+            .release/NotchDock.zip \
+            --title "NotchDock ${GITHUB_REF_NAME}" \
+            --generate-notes
