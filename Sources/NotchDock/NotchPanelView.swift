@@ -58,6 +58,7 @@ final class NotchModel: ObservableObject {
     private var powerAssertion: IOPMAssertionID = 0
     private let keyboardLock = KeyboardLockController()
     private var keyboardLockTask: Task<Void, Never>?
+    private var musicLaunchTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -258,6 +259,32 @@ final class NotchModel: ObservableObject {
 
     func runMusicCommand(_ command: String) {
         let appName = selectedMusicAppName
+        guard selectedMusicAppIsRunning else {
+            let url = URL(string: appName == "Spotify" ? "spotify:" : "music:")!
+            guard NSWorkspace.shared.open(url) else {
+                statusMessage = "Install \(appName) to use music controls"
+                return
+            }
+            statusMessage = "Opening \(appName)…"
+            musicLaunchTask?.cancel()
+            musicLaunchTask = Task { @MainActor [weak self] in
+                for _ in 0..<24 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                    if self?.selectedMusicAppIsRunning == true {
+                        self?.executeMusicCommand(command)
+                        return
+                    }
+                }
+                self?.statusMessage = "Open \(appName) and allow NotchDock to control it"
+            }
+            return
+        }
+        executeMusicCommand(command)
+    }
+
+    private func executeMusicCommand(_ command: String) {
+        let appName = selectedMusicAppName
         let source = "tell application \"\(appName)\" to " + command
         if let script = NSAppleScript(source: source) {
             var error: NSDictionary?
@@ -272,14 +299,14 @@ final class NotchModel: ObservableObject {
     }
 
     func toggleMusicPlayback() {
-        let appName = selectedMusicAppName
-        if !selectedMusicAppIsRunning {
-            let url = URL(string: appName == "Spotify" ? "spotify:" : "music:")!
-            NSWorkspace.shared.open(url)
-        }
-        // `playpause` only toggles an already-active player in some Spotify
-        // states. Explicit play/pause makes the main play button reliable.
+        // Explicit play/pause is more reliable than `playpause`; runMusicCommand
+        // waits for Spotify or Music to finish launching on a fresh install.
         runMusicCommand(musicIsPlaying ? "pause" : "play")
+    }
+
+    static func openMusicAutomationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func refreshNowPlaying() {
@@ -1417,7 +1444,11 @@ struct SettingsView: View {
                             spotifyConnected = true
                         }
                     }
-                    if spotifyConnected { Text("Spotify was opened. Finish signing in in the Spotify app if needed.").font(.system(size: 11)).foregroundStyle(ink.opacity(0.5)) }
+                    if spotifyConnected {
+                        Text("Spotify was opened. Finish signing in in the Spotify app if needed.").font(.system(size: 11)).foregroundStyle(ink.opacity(0.5))
+                        Button("Open Automation Settings") { NotchModel.openMusicAutomationSettings() }
+                            .buttonStyle(ChipButton())
+                    }
                     Text("When Spotify is connected, the Music tab sends play, pause, previous, and next commands to Spotify. Apple Music remains available when Spotify is disconnected.")
                         .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
                 }
