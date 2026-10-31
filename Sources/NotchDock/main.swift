@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         makeMenuBarItem()
         makeDetector()
         makePanel()
+        if model.showingUpdateNotice {
+            DispatchQueue.main.async { [weak self] in self?.showPanel() }
+        }
         volumeLevel = readOutputVolume() ?? 0.5
         brightnessLevel = readDisplayBrightness() ?? 0.5
         installSystemHUDMonitors()
@@ -254,6 +257,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func checkPointerLocation() {
         checkCapsLockState()
         guard let panel else { return }
+        if model.showingUpdateNotice {
+            panel.orderFrontRegardless()
+            return
+        }
         if !model.isExpanded {
             if (model.isTimerRunning || model.musicIsPlaying) && !model.hudActive, let screen = targetScreen() {
                 ensureCompactStripVisible(panel: panel, screen: screen)

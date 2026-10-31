@@ -40,6 +40,9 @@ final class NotchModel: ObservableObject {
     @Published var musicElapsed: TimeInterval = 0
     @Published var musicDuration: TimeInterval = 0
     @Published var keyboardLockRemaining = 0
+    @Published var showingUpdateNotice = false
+    @Published var updateNoticeVersion = ""
+    @Published var updateNoticeMessage = ""
     var onHUDVisibilityChanged: ((Bool) -> Void)?
     var onTimerVisibilityChanged: ((Bool) -> Void)?
     var onMusicVisibilityChanged: ((Bool) -> Void)?
@@ -58,6 +61,13 @@ final class NotchModel: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        if let version = defaults.string(forKey: "notchdock.pendingUpdateVersion"), !version.isEmpty {
+            updateNoticeVersion = version
+            updateNoticeMessage = defaults.string(forKey: "notchdock.pendingUpdateMessage") ?? "NotchDock has been updated with the latest improvements."
+            showingUpdateNotice = true
+            defaults.removeObject(forKey: "notchdock.pendingUpdateVersion")
+            defaults.removeObject(forKey: "notchdock.pendingUpdateMessage")
+        }
         note = defaults.string(forKey: "notchdock.quickNote") ?? ""
         shelfURLs = (defaults.stringArray(forKey: "notchdock.shelf") ?? []).compactMap(URL.init(string:))
         if let data = defaults.data(forKey: "notchdock.clipData"),
@@ -69,6 +79,10 @@ final class NotchModel: ObservableObject {
         poller = Timer.publish(every: 0.7, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.readPasteboard() }
         musicPoller = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refreshNowPlaying() }
         refreshNowPlaying()
+    }
+
+    func dismissUpdateNotice() {
+        showingUpdateNotice = false
     }
 
     func readPasteboard() {
@@ -616,53 +630,100 @@ struct NotchPanelView: View {
     }
 
     private var expandedContent: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .center) {
+        ZStack {
+            VStack(spacing: 0) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.selectedTab.rawValue).font(.system(size: 22, weight: .semibold, design: .rounded))
+                        Text("A useful little space in your notch").font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                    }
+                    Spacer()
+                    if model.selectedTab == .tools {
+                        Button(model.keyboardLocked ? "Unlock \(model.keyboardLockRemaining)s" : "Lock keyboard 60s") {
+                            model.toggleKeyboardLock()
+                        }
+                        .buttonStyle(AccentButton())
+                    }
+                    if model.selectedTab == .focus {
+                        Button("Custom timer") { model.beginCustomTimer() }
+                            .buttonStyle(AccentButton())
+                    }
+                    if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
+                }.padding(.horizontal, 21).padding(.top, 16).padding(.bottom, 14)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(NotchTab.allCases) { tab in
+                            Button { model.selectedTab = tab } label: {
+                                Label(tab.rawValue, systemImage: tab.symbol).font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(model.selectedTab == tab ? ink.opacity(0.17) : ink.opacity(0.055), in: Capsule())
+                                    .foregroundStyle(ink.opacity(model.selectedTab == tab ? 1 : 0.64))
+                            }.buttonStyle(.plain)
+                        }
+                        Button("Custom timer") {
+                            model.selectedTab = .focus
+                            model.beginCustomTimer()
+                        }
+                        .buttonStyle(AccentButton())
+                    }.padding(.horizontal, 18)
+                }.padding(.bottom, 12)
+
+                ScrollView(showsIndicators: false) {
+                    Group {
+                        switch model.selectedTab {
+                        case .home: home; case .music: music; case .focus: focus
+                        case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
+                        }
+                    }.padding(.horizontal, 18).padding(.bottom, 16)
+                }
+            }
+            if model.showingUpdateNotice {
+                updateNoticeCard
+                    .padding(.horizontal, 190)
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+            }
+        }
+        .frame(width: notchDockPanelWidth, height: notchDockPanelHeight - 40, alignment: .top)
+    }
+
+    private var updateNoticeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.selectedTab.rawValue).font(.system(size: 22, weight: .semibold, design: .rounded))
-                    Text("A useful little space in your notch").font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                    Text("NotchDock updated")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                    if !model.updateNoticeVersion.isEmpty {
+                        Text("Version \(model.updateNoticeVersion)")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(ink.opacity(0.48))
+                    }
                 }
                 Spacer()
-                if model.selectedTab == .tools {
-                    Button(model.keyboardLocked ? "Unlock \(model.keyboardLockRemaining)s" : "Lock keyboard 60s") {
-                        model.toggleKeyboardLock()
-                    }
-                    .buttonStyle(AccentButton())
-                }
-                if model.selectedTab == .focus {
-                    Button("Custom timer") { model.beginCustomTimer() }
-                        .buttonStyle(AccentButton())
-                }
-                if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
-            }.padding(.horizontal, 21).padding(.top, 16).padding(.bottom, 14)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(NotchTab.allCases) { tab in
-                        Button { model.selectedTab = tab } label: {
-                            Label(tab.rawValue, systemImage: tab.symbol).font(.system(size: 10, weight: .medium))
-                                .padding(.horizontal, 10).padding(.vertical, 7)
-                                .background(model.selectedTab == tab ? ink.opacity(0.17) : ink.opacity(0.055), in: Capsule())
-                                .foregroundStyle(ink.opacity(model.selectedTab == tab ? 1 : 0.64))
-                        }.buttonStyle(.plain)
-                    }
-                    Button("Custom timer") {
-                        model.selectedTab = .focus
-                        model.beginCustomTimer()
-                    }
-                    .buttonStyle(AccentButton())
-                }.padding(.horizontal, 18)
-            }.padding(.bottom, 12)
-
-            ScrollView(showsIndicators: false) {
-                Group {
-                    switch model.selectedTab {
-                    case .home: home; case .music: music; case .focus: focus
-                    case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
-                    }
-                }.padding(.horizontal, 18).padding(.bottom, 16)
             }
-        }.frame(width: notchDockPanelWidth, height: notchDockPanelHeight - 40, alignment: .top)
+            Text(model.updateNoticeMessage)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.7))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Done") {
+                    model.dismissUpdateNotice()
+                    onDismiss()
+                }
+                .buttonStyle(AccentButton())
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: 560)
+        .background(surface.opacity(0.98), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(ink.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.42), radius: 28, y: 14)
     }
 
     private var home: some View {

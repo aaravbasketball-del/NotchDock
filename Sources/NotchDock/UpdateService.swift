@@ -17,11 +17,13 @@ final class NotchUpdater: ObservableObject {
     struct Release: Decodable {
         let tagName: String
         let name: String?
+        let body: String?
         let assets: [ReleaseAsset]
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
             case name
+            case body
             case assets
         }
     }
@@ -63,7 +65,7 @@ final class NotchUpdater: ObservableObject {
             do {
                 var request = URLRequest(url: releaseAPI)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("NotchDock/0.4", forHTTPHeaderField: "User-Agent")
+                request.setValue("NotchDock/0.5", forHTTPHeaderField: "User-Agent")
                 request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 404 {
@@ -128,6 +130,14 @@ final class NotchUpdater: ObservableObject {
 
                 let newApp = root.appendingPathComponent("NotchDock.app")
                 guard FileManager.default.fileExists(atPath: newApp.path) else { throw URLError(.fileDoesNotExist) }
+                let version = normalizedVersion(release.tagName)
+                let message = release.body?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\n", with: " ")
+                UserDefaults.standard.set(version, forKey: "notchdock.pendingUpdateVersion")
+                UserDefaults.standard.set(
+                    message?.isEmpty == false ? message : "NotchDock has been updated with the latest improvements.",
+                    forKey: "notchdock.pendingUpdateMessage"
+                )
                 try launchReplacementHelper(root: root, newApp: newApp, currentApp: Bundle.main.bundleURL)
                 statusText = "Installing… NotchDock will reopen"
                 try await Task.sleep(for: .milliseconds(400))
