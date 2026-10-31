@@ -1446,9 +1446,8 @@ struct SettingsView: View {
                     }
                     if spotifyConnected {
                         Text("Spotify was opened. Finish signing in in the Spotify app if needed.").font(.system(size: 11)).foregroundStyle(ink.opacity(0.5))
-                        Button("Open Automation Settings") { NotchModel.openMusicAutomationSettings() }
-                            .buttonStyle(ChipButton())
                     }
+                    spotifyPermissionGuide
                     Text("When Spotify is connected, the Music tab sends play, pause, previous, and next commands to Spotify. Apple Music remains available when Spotify is disconnected.")
                         .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
                 }
@@ -1508,6 +1507,27 @@ struct SettingsView: View {
         }
         .padding(12)
         .background(Color.blue.opacity(isLightTheme ? 0.09 : 0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var spotifyPermissionGuide: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundStyle(Color.blue)
+                Text("Allow Spotify control")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Spacer()
+                Button("Open Settings") { NotchModel.openMusicAutomationSettings() }
+                    .buttonStyle(ChipButton())
+            }
+            Text("For playback controls to work, allow NotchDock to control Spotify in System Settings → Privacy & Security → Automation. Turn on Spotify under NotchDock, then try the play button again.")
+                .font(.system(size: 11))
+                .foregroundStyle(ink.opacity(0.58))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(Color.blue.opacity(isLightTheme ? 0.08 : 0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.blue.opacity(0.2), lineWidth: 1))
     }
 
     private func settingsSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
