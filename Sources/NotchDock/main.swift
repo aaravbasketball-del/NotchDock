@@ -73,10 +73,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
+    private func physicalNotchWidth(on screen: NSScreen) -> CGFloat {
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            let gap = right.minX - left.maxX
+            if gap > 50 { return gap }
+        }
+        return 180
+    }
+
     private func makeDetector() {
         guard let screen = targetScreen() else { return }
-        let width: CGFloat = 300
-        let height: CGFloat = 44
+        let width = physicalNotchWidth(on: screen)
+        let height: CGFloat = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : 36
         let detector = NSPanel(
             contentRect: CGRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
