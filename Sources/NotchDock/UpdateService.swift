@@ -65,7 +65,7 @@ final class NotchUpdater: ObservableObject {
             do {
                 var request = URLRequest(url: releaseAPI)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("NotchDock/0.9", forHTTPHeaderField: "User-Agent")
+                request.setValue("NotchDock/1.0", forHTTPHeaderField: "User-Agent")
                 request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 404 {
@@ -131,13 +131,9 @@ final class NotchUpdater: ObservableObject {
                 let newApp = root.appendingPathComponent("NotchDock.app")
                 guard FileManager.default.fileExists(atPath: newApp.path) else { throw URLError(.fileDoesNotExist) }
                 let version = normalizedVersion(release.tagName)
-                let message = release.body?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "\n", with: " ")
+                let message = cleanReleaseDescription(release.body)
                 UserDefaults.standard.set(version, forKey: "notchdock.pendingUpdateVersion")
-                UserDefaults.standard.set(
-                    message?.isEmpty == false ? message : "NotchDock has been updated with the latest improvements.",
-                    forKey: "notchdock.pendingUpdateMessage"
-                )
+                UserDefaults.standard.set(message, forKey: "notchdock.pendingUpdateMessage")
                 try launchReplacementHelper(root: root, newApp: newApp, currentApp: Bundle.main.bundleURL)
                 statusText = "Installing… NotchDock will reopen"
                 try await Task.sleep(for: .milliseconds(400))
@@ -198,5 +194,44 @@ final class NotchUpdater: ObservableObject {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func cleanReleaseDescription(_ raw: String?) -> String {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return "NotchDock 1.0 includes performance improvements and new features."
+        }
+        let lines = raw.components(separatedBy: .newlines)
+        var cleanedItems: [String] = []
+
+        for line in lines {
+            var item = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if item.isEmpty { continue }
+            // Skip markdown headings like "## What's Changed"
+            if item.hasPrefix("#") { continue }
+            // Skip full changelog links and compare URLs
+            if item.lowercased().contains("full changelog") || item.contains("/compare/") { continue }
+            if item.hasPrefix("http://") || item.hasPrefix("https://") { continue }
+
+            // Strip GitHub PR/commit author trailers like "by @aaravbasketball-del in https://github.com/..."
+            if let byRange = item.range(of: " by @", options: .backwards) {
+                item = String(item[..<byRange.lowerBound])
+            }
+            // Strip markdown bullet markers: "*", "-", "•"
+            item = item.replacingOccurrences(of: "^[*\\-•]\\s*", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Remove any remaining inline URLs
+            item = item.replacingOccurrences(of: "https?://\\S+", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !item.isEmpty {
+                cleanedItems.append("• " + item)
+            }
+        }
+
+        if cleanedItems.isEmpty {
+            return "NotchDock 1.0 includes performance improvements and new features."
+        }
+        return cleanedItems.joined(separator: "\n")
     }
 }

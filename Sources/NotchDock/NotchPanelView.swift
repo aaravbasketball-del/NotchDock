@@ -756,12 +756,23 @@ struct NotchPanelView: View {
                 }
                 .buttonStyle(.plain)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text(model.updateNoticeMessage.isEmpty ? "NotchDock has been updated with the latest improvements." : model.updateNoticeMessage)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(ink.opacity(0.85))
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                let lines = model.updateNoticeMessage.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                if lines.isEmpty {
+                    Text("NotchDock 1.0 includes performance improvements and new features.")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.85))
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(lines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(ink.opacity(0.85))
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
