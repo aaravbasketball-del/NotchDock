@@ -1769,6 +1769,13 @@ struct SettingsView: View {
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
     @AppStorage("notchdock.theme") private var themeName = "black"
     @AppStorage("notchdock.launchAtLogin") private var launchAtLogin = false
+    @AppStorage("notchdock.fakeNotchEnabled") private var fakeNotchEnabled = false
+    @AppStorage("notchdock.fakeNotchStyle") private var fakeNotchStyle = "notch"
+    @AppStorage("notchdock.fakeNotchWidth") private var fakeNotchWidth = 180.0
+    @AppStorage("notchdock.fakeNotchHeight") private var fakeNotchHeight = 32.0
+    @AppStorage("notchdock.fakeNotchOnlyWithoutPhysicalNotch") private var fakeNotchOnlyWithoutPhysicalNotch = false
+    @AppStorage("notchdock.fakeNotchShowCamera") private var fakeNotchShowCamera = true
+    @AppStorage("notchdock.showTriggerBump") private var showTriggerBump = false
     @StateObject private var updater = NotchUpdater()
 
     private var isLightTheme: Bool { themeName == "white" }
@@ -1831,6 +1838,99 @@ struct SettingsView: View {
                         Text("Automatically launch NotchDock whenever you log in or restart your Mac.")
                             .font(.system(size: 11))
                             .foregroundStyle(ink.opacity(0.48))
+                    }
+                }
+                settingsSection("Screen Notch & Trigger") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Toggle(isOn: $fakeNotchEnabled) {
+                            Label("Enable fake notch", systemImage: "sparkles.rectangle.stack")
+                        }
+                        .toggleStyle(.switch)
+
+                        Text("Simulates a visual notch or island at the top of your screen. Perfect for external displays and Macs without a physical notch.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ink.opacity(0.48))
+
+                        if fakeNotchEnabled {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Divider().opacity(0.15)
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label("Shape", systemImage: "rectangle.topthird.inset.filled")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(ink.opacity(0.8))
+
+                                    Picker("Notch Shape", selection: $fakeNotchStyle) {
+                                        Text("MacBook Notch").tag("notch")
+                                        Text("Dynamic Island").tag("island")
+                                    }
+                                    .pickerStyle(.segmented)
+
+                                    Text(fakeNotchStyle == "island" ? "A floating pill inspired by the Dynamic Island." : "Classic MacBook notch sitting flush with the top display bezel.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(ink.opacity(0.48))
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Label("Width", systemImage: "arrow.left.and.right")
+                                        Spacer()
+                                        Text("\(Int(fakeNotchWidth)) px")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(ink.opacity(0.56))
+                                            .monospacedDigit()
+                                    }
+                                    Slider(value: $fakeNotchWidth, in: 120...260, step: 2)
+                                        .tint(ink)
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Label("Height", systemImage: "arrow.up.and.down")
+                                        Spacer()
+                                        Text("\(Int(fakeNotchHeight)) px")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(ink.opacity(0.56))
+                                            .monospacedDigit()
+                                    }
+                                    Slider(value: $fakeNotchHeight, in: 24...38, step: 1)
+                                        .tint(ink)
+                                }
+
+                                Toggle(isOn: $fakeNotchShowCamera) {
+                                    Label("Show camera lens reflection", systemImage: "camera.circle")
+                                }
+                                .toggleStyle(.switch)
+
+                                Toggle(isOn: $fakeNotchOnlyWithoutPhysicalNotch) {
+                                    Label("Only show on notchless displays", systemImage: "display.2")
+                                }
+                                .toggleStyle(.switch)
+
+                                Text("Automatically hides the simulated notch when running on a MacBook with a built-in physical notch.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(ink.opacity(0.48))
+                            }
+                            .padding(12)
+                            .background(ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                        }
+
+                        Divider().opacity(0.15)
+
+                        Toggle(isOn: $showTriggerBump) {
+                            Label("Show small trigger bump", systemImage: "capsule.portrait")
+                        }
+                        .toggleStyle(.switch)
+
+                        Text("Displays a minimal, discreet bump at the top edge of your screen as a tactile hover target for NotchDock.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ink.opacity(0.48))
+
+                        if fakeNotchEnabled && showTriggerBump {
+                            Label("The fake notch takes visual precedence over the small bump when both are enabled.", systemImage: "info.circle")
+                                .font(.system(size: 10))
+                                .foregroundStyle(ink.opacity(0.45))
+                        }
                     }
                 }
                 settingsSection("Hover behavior") {

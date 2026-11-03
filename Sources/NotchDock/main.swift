@@ -78,6 +78,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSettingsOrScreenChanged),
+            name: UserDefaults.didChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSettingsOrScreenChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
     }
 
     private func makeMenuBarItem() {
@@ -107,10 +119,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return 180
     }
 
-    private func makeDetector() {
-        guard let screen = targetScreen() else { return }
+    private func hasPhysicalNotch(on screen: NSScreen) -> Bool {
+        screen.safeAreaInsets.top > 0 || screen.auxiliaryTopLeftArea != nil
+    }
+
+    private func currentTriggerDimensions(on screen: NSScreen) -> (width: CGFloat, height: CGFloat) {
+        let physical = hasPhysicalNotch(on: screen)
+        let fakeNotch = UserDefaults.standard.bool(forKey: "notchdock.fakeNotchEnabled")
+        let onlyWithoutNotch = UserDefaults.standard.bool(forKey: "notchdock.fakeNotchOnlyWithoutPhysicalNotch")
+        let showBump = UserDefaults.standard.bool(forKey: "notchdock.showTriggerBump")
+
+        let fakeNotchActive = fakeNotch && (!onlyWithoutNotch || !physical)
+
+        if fakeNotchActive {
+            let style = UserDefaults.standard.string(forKey: "notchdock.fakeNotchStyle") ?? "notch"
+            let rawW = UserDefaults.standard.double(forKey: "notchdock.fakeNotchWidth")
+            let rawH = UserDefaults.standard.double(forKey: "notchdock.fakeNotchHeight")
+            let w = rawW >= 100 ? CGFloat(rawW) : (style == "island" ? 160 : 180)
+            let h = rawH >= 20 ? CGFloat(rawH) : 32
+            let triggerHeight = style == "island" ? h + 8 : h
+            return (width: w, height: triggerHeight)
+        }
+
+        if showBump {
+            return (width: 76, height: 12)
+        }
+
         let width = physicalNotchWidth(on: screen)
         let height: CGFloat = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : 36
+        return (width: width, height: height)
+    }
+
+    private func makeDetector() {
+        guard let screen = targetScreen() else { return }
+        let (width, height) = currentTriggerDimensions(on: screen)
         let detector = NSPanel(
             contentRect: CGRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
@@ -123,11 +165,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detector.ignoresMouseEvents = false
         detector.contentView = HoverDetectorView(
             onEnter: { [weak self] in self?.showPanel() },
-            onExit: { [weak self] in self?.scheduleClose() }
+            onExit: { [weak self] in self?.scheduleClose() },
+            hasPhysicalNotch: hasPhysicalNotch(on: screen)
         )
         detector.setFrame(notchAnchoredFrame(on: screen, width: width, height: height), display: false)
         detector.orderFrontRegardless()
         self.detector = detector
+    }
+
+    func updateDetectorDimensions() {
+        guard let detector, let screen = targetScreen() else { return }
+        let (width, height) = currentTriggerDimensions(on: screen)
+        let frame = notchAnchoredFrame(on: screen, width: width, height: height)
+        detector.setFrame(frame, display: true)
+        if let hoverView = detector.contentView as? HoverDetectorView {
+            hoverView.updatePhysicalNotchStatus(hasPhysicalNotch(on: screen))
+        }
+    }
+
+    @objc private func handleSettingsOrScreenChanged() {
+        updateDetectorDimensions()
     }
 
     private func makePanel() {
@@ -229,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         model.isExpanded = true
+        detector?.alphaValue = 0
         if let screen = targetScreen() {
             let frame = notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockPanelHeight)
             NSAnimationContext.runAnimationGroup { context in
@@ -655,6 +713,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self.panel?.orderOut(nil)
             }
+            self.detector?.orderFrontRegardless()
+            self.detector?.alphaValue = 1
             self.closeAnimationTask = nil
         }
     }
@@ -674,6 +734,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             panel?.orderOut(nil)
         }
+        detector?.orderFrontRegardless()
+        detector?.alphaValue = 1
     }
 
     @objc private func togglePanel() {
@@ -732,16 +794,34 @@ final class HoverDetectorView: NSView {
     private let onEnter: () -> Void
     private let onExit: () -> Void
     private var tracking: NSTrackingArea?
+    private var hostingView: NSHostingView<TriggerIndicatorView>?
 
-    init(onEnter: @escaping () -> Void, onExit: @escaping () -> Void) {
+    init(onEnter: @escaping () -> Void, onExit: @escaping () -> Void, hasPhysicalNotch: Bool) {
         self.onEnter = onEnter
         self.onExit = onExit
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+
+        let indicator = TriggerIndicatorView(hasPhysicalNotch: hasPhysicalNotch)
+        let host = NSHostingView(rootView: indicator)
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        host.autoresizingMask = [.width, .height]
+        addSubview(host)
+        self.hostingView = host
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func updatePhysicalNotchStatus(_ hasNotch: Bool) {
+        hostingView?.rootView = TriggerIndicatorView(hasPhysicalNotch: hasNotch)
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView?.frame = bounds
+    }
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
