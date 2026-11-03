@@ -7,6 +7,13 @@ import AVFoundation
 import ApplicationServices
 import ServiceManagement
 
+struct AppleNoteItem: Identifiable, Codable, Equatable {
+    let id: String
+    let title: String
+    let snippet: String
+    let date: String
+}
+
 @MainActor
 final class NotchModel: ObservableObject {
     @Published var isExpanded = false
@@ -14,6 +21,8 @@ final class NotchModel: ObservableObject {
     @Published var note = "" { didSet { UserDefaults.standard.set(note, forKey: "notchdock.quickNote") } }
     @Published var quickNoteDraft = ""
     @Published var recentNotes: [String] = []
+    @Published var appleNotes: [AppleNoteItem] = []
+    @Published var isSyncingNotes = false
     @Published var clips: [Clip] = []
     @Published var pinnedIDs: Set<UUID> = []
     @Published var shelfURLs: [URL] = []
@@ -74,6 +83,10 @@ final class NotchModel: ObservableObject {
         }
         note = defaults.string(forKey: "notchdock.quickNote") ?? ""
         recentNotes = defaults.stringArray(forKey: "notchdock.recentNotes") ?? []
+        if let data = defaults.data(forKey: "notchdock.syncedAppleNotes"),
+           let saved = try? JSONDecoder().decode([AppleNoteItem].self, from: data) {
+            appleNotes = saved
+        }
         shelfURLs = (defaults.stringArray(forKey: "notchdock.shelf") ?? []).compactMap(URL.init(string:))
         if let data = defaults.data(forKey: "notchdock.clipData"),
            let saved = try? JSONDecoder().decode([Clip].self, from: data) {
@@ -84,6 +97,7 @@ final class NotchModel: ObservableObject {
         poller = Timer.publish(every: 0.7, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.readPasteboard() }
         musicPoller = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refreshNowPlaying() }
         refreshNowPlaying()
+        syncAppleNotes()
     }
 
     func dismissUpdateNotice() {
@@ -98,6 +112,9 @@ final class NotchModel: ObservableObject {
         recentNotes = Array(recentNotes.prefix(30))
         UserDefaults.standard.set(recentNotes, forKey: "notchdock.recentNotes")
         quickNoteDraft = ""
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.syncAppleNotes()
+        }
     }
 
     func saveNoteToAppleNotes(_ text: String) {
@@ -142,6 +159,94 @@ final class NotchModel: ObservableObject {
                         self.statusMessage = "Note saved"
                     }
                 }
+            }
+        }
+    }
+
+    func syncAppleNotes() {
+        guard !isSyncingNotes else { return }
+        isSyncingNotes = true
+
+        let script = """
+        tell application "Notes"
+            try
+                set outText to ""
+                set theNotes to notes
+                set totalCount to count of theNotes
+                if totalCount > 15 then set totalCount to 15
+                repeat with i from 1 to totalCount
+                    set aNote to item i of theNotes
+                    set nId to id of aNote
+                    set nName to name of aNote
+                    set nDate to (modification date of aNote) as string
+                    set nBody to ""
+                    try
+                        set nBody to paragraph 2 of (plaintext of aNote)
+                    on error
+                        try
+                            set nBody to plaintext of aNote
+                        end try
+                    end try
+                    set outText to outText & nId & "<!SEP!>" & nName & "<!SEP!>" & nBody & "<!SEP!>" & nDate & "<!ROW!>"
+                end repeat
+                return outText
+            on error
+                return ""
+            end try
+        end tell
+        """
+
+        Task {
+            guard let scriptObj = NSAppleScript(source: script) else {
+                self.isSyncingNotes = false
+                return
+            }
+            var error: NSDictionary?
+            let descriptor = scriptObj.executeAndReturnError(&error)
+            let resultString = descriptor.stringValue ?? ""
+
+            var items: [AppleNoteItem] = []
+            if !resultString.isEmpty && error == nil {
+                let rows = resultString.components(separatedBy: "<!ROW!>")
+                for row in rows where !row.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let parts = row.components(separatedBy: "<!SEP!>")
+                    if parts.count >= 4 {
+                        let id = parts[0]
+                        let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        let snippet = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
+                        let date = parts[3].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !title.isEmpty {
+                            items.append(AppleNoteItem(id: id, title: title, snippet: snippet, date: date))
+                        }
+                    }
+                }
+            }
+
+            if !items.isEmpty {
+                self.appleNotes = items
+                if let encoded = try? JSONEncoder().encode(items) {
+                    UserDefaults.standard.set(encoded, forKey: "notchdock.syncedAppleNotes")
+                }
+            }
+            self.isSyncingNotes = false
+        }
+    }
+
+    func openNoteInAppleNotes(id: String) {
+        let script = """
+        tell application "Notes"
+            try
+                show note id "\(id)"
+                activate
+            on error
+                activate
+            end try
+        end tell
+        """
+        Task {
+            if let s = NSAppleScript(source: script) {
+                var err: NSDictionary?
+                s.executeAndReturnError(&err)
             }
         }
     }
@@ -1282,11 +1387,19 @@ struct NotchSilhouette: Shape {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Quick Notes").font(.system(size: 15, weight: .semibold, design: .rounded))
-                    Text("Type a note and press Return (Enter). It automatically saves to your Mac's Notes app.")
+                    Text("Apple Notes").font(.system(size: 15, weight: .semibold, design: .rounded))
+                    Text("Type a quick note and press Enter to save to Apple Notes. Synced with Notes.app.")
                         .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
                 }
                 Spacer()
+                Button {
+                    model.syncAppleNotes()
+                } label: {
+                    Label(model.isSyncingNotes ? "Syncing…" : "Sync", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(ChipButton())
+                .disabled(model.isSyncingNotes)
+
                 Button {
                     NSWorkspace.shared.open(URL(string: "notes:") ?? URL(fileURLWithPath: "/System/Applications/Notes.app"))
                 } label: {
@@ -1312,21 +1425,64 @@ struct NotchSilhouette: Shape {
                 Button {
                     model.submitQuickNote()
                 } label: {
-                    Label("Save", systemImage: "arrow.turn.down.left")
+                    Label("Save (↵)", systemImage: "arrow.turn.down.left")
                 }
                 .buttonStyle(AccentButton())
                 .disabled(model.quickNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            if !model.recentNotes.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Recently Saved to Notes").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(ink.opacity(0.55))
-                        Spacer()
-                        if !model.statusMessage.isEmpty {
-                            Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(.green.opacity(0.8))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Apple Notes Feed").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(ink.opacity(0.55))
+                    Spacer()
+                    if !model.statusMessage.isEmpty {
+                        Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(.green.opacity(0.8))
+                    }
+                }
+
+                if !model.appleNotes.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(model.appleNotes) { item in
+                                Button {
+                                    model.openNoteInAppleNotes(id: item.id)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Image(systemName: "note.text")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.15))
+                                            .padding(.top, 2)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack {
+                                                Text(item.title)
+                                                    .font(.system(size: 12, weight: .semibold))
+                                                    .foregroundStyle(ink)
+                                                    .lineLimit(1)
+                                                Spacer()
+                                                if !item.date.isEmpty {
+                                                    Text(item.date)
+                                                        .font(.system(size: 9))
+                                                        .foregroundStyle(ink.opacity(0.35))
+                                                }
+                                            }
+                                            if !item.snippet.isEmpty && item.snippet != item.title {
+                                                Text(item.snippet)
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(ink.opacity(0.65))
+                                                    .lineLimit(2)
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .padding(10)
+                                    .background(ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
+                    .frame(maxHeight: 220)
+                } else if !model.recentNotes.isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(model.recentNotes, id: \.self) { item in
@@ -1339,9 +1495,17 @@ struct NotchSilhouette: Shape {
                             }
                         }
                     }
-                    .frame(maxHeight: 180)
+                    .frame(maxHeight: 220)
+                } else {
+                    Text("No notes yet. Type a note above and press Enter to save to Apple Notes.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ink.opacity(0.42))
+                        .padding(.vertical, 8)
                 }
             }
+        }
+        .onAppear {
+            model.syncAppleNotes()
         }
     }
     private var tools: some View {
