@@ -563,19 +563,78 @@ struct NotchPanelView: View {
         return Color(hue: 0.34 - (0.34 * model.hudProgress), saturation: 0.8, brightness: 1)
     }
 
-    private var panelShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            cornerRadii: .init(topLeading: 0, bottomLeading: 26, bottomTrailing: 26, topTrailing: 0),
-            style: .continuous
-        )
+    private var panelShape: NotchSilhouette {
+        NotchSilhouette(topRadius: 16, bottomRadius: 26)
     }
 
-    private var hudShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            cornerRadii: .init(topLeading: 0, bottomLeading: 24, bottomTrailing: 24, topTrailing: 0),
-            style: .continuous
-        )
+    private var hudShape: NotchSilhouette {
+        NotchSilhouette(topRadius: 14, bottomRadius: 24)
     }
+
+struct NotchSilhouette: Shape {
+    var topRadius: CGFloat = 16
+    var bottomRadius: CGFloat = 26
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let w = rect.width
+        let h = rect.height
+        let tr = min(topRadius, min(w / 4, h / 2))
+        let br = min(bottomRadius, min((w - 2 * tr) / 2, h - tr))
+
+        path.move(to: CGPoint(x: 0, y: 0))
+
+        // Top-left outward curve: from (0, 0) curving down to (tr, tr)
+        path.addArc(
+            center: CGPoint(x: 0, y: tr),
+            radius: tr,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(0),
+            clockwise: false
+        )
+
+        // Left vertical edge down to (tr, h - br)
+        path.addLine(to: CGPoint(x: tr, y: h - br))
+
+        // Bottom-left inward curve: from (tr, h - br) to (tr + br, h)
+        path.addArc(
+            center: CGPoint(x: tr + br, y: h - br),
+            radius: br,
+            startAngle: .degrees(180),
+            endAngle: .degrees(90),
+            clockwise: true
+        )
+
+        // Bottom horizontal edge
+        path.addLine(to: CGPoint(x: w - tr - br, y: h))
+
+        // Bottom-right inward curve: from (w - tr - br, h) to (w - tr, h - br)
+        path.addArc(
+            center: CGPoint(x: w - tr - br, y: h - br),
+            radius: br,
+            startAngle: .degrees(90),
+            endAngle: .degrees(0),
+            clockwise: true
+        )
+
+        // Right vertical edge up to (w - tr, tr)
+        path.addLine(to: CGPoint(x: w - tr, y: tr))
+
+        // Top-right outward curve: from (w - tr, tr) curving up and out to (w, 0)
+        path.addArc(
+            center: CGPoint(x: w, y: tr),
+            radius: tr,
+            startAngle: .degrees(180),
+            endAngle: .degrees(270),
+            clockwise: false
+        )
+
+        // Top edge flush with display bezel
+        path.addLine(to: CGPoint(x: 0, y: 0))
+        path.closeSubpath()
+        return path
+    }
+}
 
     @ViewBuilder private var notchRail: some View {
         if model.isTimerRunning && !model.isExpanded {

@@ -148,9 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.layer?.isOpaque = false
-        hostingView.layer?.masksToBounds = true
-        hostingView.layer?.cornerRadius = 26
-        hostingView.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        hostingView.layer?.masksToBounds = false
         panel.contentView = hostingView
         panel.setFrame(notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockCollapsedHeight), display: false)
         panel.orderOut(nil)
