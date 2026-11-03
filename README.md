@@ -81,7 +81,10 @@ You can manage these anytime in **System Settings → Privacy & Security**.
 
 - **Hardware Notch Alignment**: Custom notch silhouette featuring top outward curves (concave fillets) that merge into the display bezel, and bottom inward rounded corners.
 - **Compact Media & Timer Strip**: Shows remaining timer countdown or Spotify / Apple Music track progress in a mini strip. Hovering over it instantly expands the dock.
-- **Quick Notes to Apple Notes**: Type a quick thought in the input box and press **Enter (↵)**; it automatically saves directly to macOS **Notes.app** and clears the field for your next note.
+- **Two-Way Apple Notes Sync**: Automatically displays your recent notes and quick notes right in the notch feed with live timestamps and click-to-open directly in Apple Notes.
+- **Simulated Fake Notch & Dynamic Island**: Perfect for external monitors or notchless Macs. Choose between a classic MacBook notch or a floating Dynamic Island pill with customizable width, height, and camera reflection.
+- **Trigger Bump Indicator**: Adds a subtle tactile bump at the top edge of your screen as a dedicated hover target with adaptive trigger dimensions.
+- **Launch at Login**: Easily toggle automatic startup on login/restart in Settings via macOS `ServiceManagement` (`SMAppService`).
 - **Volume & Brightness Display Modes**: Choose in Settings whether you want both macOS and NotchDock indicators, only macOS, or only NotchDock (suppressing the stock system overlay).
 - **Clipboard History**: Search, pin, and copy past clipboard clips with keyboard shortcuts.
 - **Drag & Drop File Shelf**: Stage files in the notch for quick drag-out access and AirDrop sharing.
