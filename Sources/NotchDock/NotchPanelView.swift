@@ -117,11 +117,40 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    static func requestAutomationPermission(for bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        guard let data = bundleID.data(using: .utf8) else { return false }
+        let status = data.withUnsafeBytes { rawBuffer in
+            AECreateDesc(typeApplicationBundleID, rawBuffer.baseAddress, rawBuffer.count, &target)
+        }
+        guard status == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let permStatus = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
+        return permStatus == noErr
+    }
+
+    static func showAutomationPermissionAlert(for appName: String) {
+        Task { @MainActor in
+            let alert = NSAlert()
+            alert.messageText = "Automation Permission Required"
+            alert.informativeText = "NotchDock needs permission to automate \(appName). Please allow NotchDock in System Settings → Privacy & Security → Automation."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                openMusicAutomationSettings()
+            }
+        }
+    }
+
     func saveNoteToAppleNotes(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        // Sanitize for AppleScript string literal and HTML formatting in Notes.app
+        _ = NotchModel.requestAutomationPermission(for: "com.apple.Notes")
+
         let escapedHTML = trimmed
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -132,19 +161,7 @@ final class NotchModel: ObservableObject {
 
         let scriptSource = """
         tell application "Notes"
-            try
-                tell default account to tell folder "Notes"
-                    make new note with properties {body:"<div>\(escapedHTML)</div>"}
-                end tell
-            on error
-                try
-                    make new note with properties {body:"<div>\(escapedHTML)</div>"}
-                on error
-                    tell default account
-                        make new note with properties {body:"<div>\(escapedHTML)</div>"}
-                    end tell
-                end try
-            end try
+            make new note with properties {body:"<div>\(escapedHTML)</div>"}
         end tell
         """
 
@@ -153,10 +170,16 @@ final class NotchModel: ObservableObject {
                 var error: NSDictionary?
                 script.executeAndReturnError(&error)
                 await MainActor.run {
-                    if error == nil {
-                        self.statusMessage = "Saved to Apple Notes"
+                    if let error {
+                        let errNum = error[NSAppleScript.errorNumber] as? Int ?? 0
+                        if errNum == -1743 || errNum == -1744 {
+                            self.statusMessage = "Notes permission required in Settings"
+                            NotchModel.showAutomationPermissionAlert(for: "Notes")
+                        } else {
+                            self.statusMessage = "Could not save to Notes"
+                        }
                     } else {
-                        self.statusMessage = "Note saved"
+                        self.statusMessage = "Saved to Apple Notes"
                     }
                 }
             }
@@ -450,12 +473,21 @@ final class NotchModel: ObservableObject {
 
     private func executeMusicCommand(_ command: String) {
         let appName = selectedMusicAppName
+        _ = NotchModel.requestAutomationPermission(for: selectedMusicBundleID)
         let source = "tell application \"\(appName)\" to " + command
         if let script = NSAppleScript(source: source) {
             var error: NSDictionary?
             script.executeAndReturnError(&error)
-            statusMessage = error == nil ? "Sent to \(appName)" : "Allow NotchDock to control \(appName) in System Settings"
-            if error == nil {
+            if let error {
+                let errNum = error[NSAppleScript.errorNumber] as? Int ?? 0
+                if errNum == -1743 || errNum == -1744 {
+                    statusMessage = "\(appName) permission required in Settings"
+                    NotchModel.showAutomationPermissionAlert(for: appName)
+                } else {
+                    statusMessage = "Allow NotchDock to control \(appName) in System Settings"
+                }
+            } else {
+                statusMessage = "Sent to \(appName)"
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                     self?.refreshNowPlaying()
                 }
@@ -697,7 +729,7 @@ struct NotchPanelView: View {
                     }
                 }
         }
-        .padding(.horizontal, 28).padding(.bottom, isCompactHUD ? 10 : 17)
+        .padding(.horizontal, 20).padding(.bottom, isCompactHUD ? 10 : 17)
         .frame(width: isCompactHUD ? 300 : 380, height: isCompactHUD ? 92 : 114)
         .background(surface.opacity(0.99), in: hudShape)
         .compositingGroup()
@@ -720,12 +752,18 @@ struct NotchPanelView: View {
         return Color(hue: 0.34 - (0.34 * model.hudProgress), saturation: 0.8, brightness: 1)
     }
 
-    private var panelShape: NotchSilhouette {
-        NotchSilhouette(topRadius: 16, bottomRadius: 26)
+    private var panelShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(topLeading: 0, bottomLeading: 26, bottomTrailing: 26, topTrailing: 0),
+            style: .continuous
+        )
     }
 
-    private var hudShape: NotchSilhouette {
-        NotchSilhouette(topRadius: 14, bottomRadius: 24)
+    private var hudShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: .init(topLeading: 0, bottomLeading: 24, bottomTrailing: 24, topTrailing: 0),
+            style: .continuous
+        )
     }
 
 struct NotchSilhouette: Shape {
@@ -817,7 +855,7 @@ struct NotchSilhouette: Shape {
                 .disabled(updater.isChecking || updater.isInstalling)
                 Button { onDismiss() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.62)).frame(width: 22, height: 22).background(ink.opacity(0.09), in: Circle()) }.buttonStyle(.plain)
             }.foregroundStyle(ink).frame(maxWidth: .infinity, alignment: .trailing)
-        }.padding(.horizontal, 36).frame(height: 40)
+        }.padding(.horizontal, 22).frame(height: 40)
         }
     }
 
@@ -895,7 +933,7 @@ struct NotchSilhouette: Shape {
                             .buttonStyle(AccentButton())
                     }
                     if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
-                }.padding(.horizontal, 36).padding(.top, 16).padding(.bottom, 14)
+                }.padding(.horizontal, 22).padding(.top, 16).padding(.bottom, 14)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -912,7 +950,7 @@ struct NotchSilhouette: Shape {
                             model.beginCustomTimer()
                         }
                         .buttonStyle(AccentButton())
-                    }.padding(.horizontal, 34)
+                    }.padding(.horizontal, 18)
                 }.padding(.bottom, 12)
 
                 ScrollView(showsIndicators: false) {
@@ -921,7 +959,7 @@ struct NotchSilhouette: Shape {
                         case .home: home; case .music: music; case .focus: focus
                         case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
                         }
-                    }.padding(.horizontal, 34).padding(.bottom, 16)
+                    }.padding(.horizontal, 18).padding(.bottom, 16)
                 }
             }
             if model.showingUpdateNotice {
