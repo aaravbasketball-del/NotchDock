@@ -76,7 +76,11 @@ final class NotchModel: ObservableObject {
         let defaults = UserDefaults.standard
         if let version = defaults.string(forKey: "notchdock.pendingUpdateVersion"), !version.isEmpty {
             updateNoticeVersion = version
-            updateNoticeMessage = defaults.string(forKey: "notchdock.pendingUpdateMessage") ?? "NotchDock has been updated with the latest improvements."
+            var message = defaults.string(forKey: "notchdock.pendingUpdateMessage") ?? ""
+            if message.contains("NotchDock 1.0 includes") || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                message = NotchUpdater.defaultReleaseNotes(for: version)
+            }
+            updateNoticeMessage = message
             showingUpdateNotice = true
             defaults.removeObject(forKey: "notchdock.pendingUpdateVersion")
             defaults.removeObject(forKey: "notchdock.pendingUpdateMessage")
@@ -942,16 +946,23 @@ struct NotchSilhouette: Shape {
                 }
             }
             if model.showingUpdateNotice {
-                updateNoticeCard
-                    .padding(.horizontal, 190)
-                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+                ZStack {
+                    Color.black.opacity(0.72)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .onTapGesture {
+                            model.dismissUpdateNotice()
+                        }
+
+                    updateNoticeCard
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
         }
         .frame(width: notchDockPanelWidth, height: notchDockPanelHeight - 40, alignment: .top)
     }
 
     private var updateNoticeCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Image(systemName: "sparkles")
                     .font(.system(size: 16, weight: .bold))
@@ -965,10 +976,11 @@ struct NotchSilhouette: Shape {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("What's New in NotchDock")
                         .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
                     if !model.updateNoticeVersion.isEmpty {
                         Text("Version \(model.updateNoticeVersion)")
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color(red: 1.0, green: 0.5, blue: 0.15))
+                            .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.15))
                     }
                 }
                 Spacer()
@@ -978,77 +990,66 @@ struct NotchSilhouette: Shape {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.white.opacity(0.85))
                         .frame(width: 24, height: 24)
-                        .background(
-                            LinearGradient(colors: [Color(red: 1.0, green: 0.4, blue: 0.15), Color(red: 0.95, green: 0.2, blue: 0.15)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: Circle()
-                        )
-                        .shadow(color: Color.orange.opacity(0.35), radius: 4, y: 1)
+                        .background(Color.white.opacity(0.12), in: Circle())
                 }
                 .buttonStyle(.plain)
             }
+
             VStack(alignment: .leading, spacing: 8) {
                 let lines = model.updateNoticeMessage.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                if lines.isEmpty {
-                    Text("NotchDock includes performance improvements and new features.")
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(ink.opacity(0.85))
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(lines, id: \.self) { line in
-                                if line == "WHAT'S NEW" {
-                                    Label("What’s New", systemImage: "sparkles")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundStyle(Color(red: 1.0, green: 0.5, blue: 0.15))
-                                        .padding(.top, 4)
-                                } else if line == "WHAT'S FIXED" {
-                                    Label("What’s Fixed", systemImage: "wrench.and.screwdriver.fill")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundStyle(Color.blue)
-                                        .padding(.top, 8)
-                                } else if line == "IMPROVEMENTS" {
-                                    Label("Improvements", systemImage: "checkmark.circle.fill")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundStyle(Color.green)
-                                        .padding(.top, 8)
-                                } else {
-                                    HStack(alignment: .top, spacing: 6) {
-                                        Text("•")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundStyle(ink.opacity(0.45))
-                                        Text(line.replacingOccurrences(of: "^[•\\-*]\\s*", with: "", options: .regularExpression))
-                                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                                            .foregroundStyle(ink.opacity(0.88))
-                                            .lineSpacing(2)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(lines, id: \.self) { line in
+                            if line == "WHAT'S NEW" {
+                                Label("What’s New", systemImage: "sparkles")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.15))
+                                    .padding(.top, 2)
+                            } else if line == "WHAT'S FIXED" {
+                                Label("What’s Fixed", systemImage: "wrench.and.screwdriver.fill")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color(red: 0.35, green: 0.65, blue: 1.0))
+                                    .padding(.top, 6)
+                            } else if line == "IMPROVEMENTS" {
+                                Label("Improvements", systemImage: "checkmark.circle.fill")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.green)
+                                    .padding(.top, 6)
+                            } else {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.4))
+                                        .frame(width: 4, height: 4)
+                                        .padding(.top, 6)
+                                    Text(line.replacingOccurrences(of: "^[•\\-*]\\s*", with: "", options: .regularExpression))
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.9))
+                                        .lineSpacing(2)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 240)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxHeight: 240)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
             HStack {
                 Spacer()
                 Button {
                     model.dismissUpdateNotice()
-                    onDismiss()
                 } label: {
                     Text("Got it")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
                         .background(
                             LinearGradient(colors: [Color(red: 1.0, green: 0.45, blue: 0.1), Color(red: 0.95, green: 0.25, blue: 0.15)],
                                            startPoint: .topLeading, endPoint: .bottomTrailing),
@@ -1059,13 +1060,13 @@ struct NotchSilhouette: Shape {
             }
         }
         .padding(22)
-        .frame(maxWidth: 540)
-        .background(surface.opacity(0.98), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .frame(maxWidth: 520)
+        .background(Color(red: 0.11, green: 0.11, blue: 0.13), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(LinearGradient(colors: [Color.orange.opacity(0.4), Color.red.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.45), radius: 28, y: 14)
+        .shadow(color: .black.opacity(0.6), radius: 30, y: 15)
     }
 
     private var home: some View {

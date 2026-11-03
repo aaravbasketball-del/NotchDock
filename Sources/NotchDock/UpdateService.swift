@@ -65,7 +65,7 @@ final class NotchUpdater: ObservableObject {
             do {
                 var request = URLRequest(url: releaseAPI)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("NotchDock/1.2.2", forHTTPHeaderField: "User-Agent")
+                request.setValue("NotchDock/1.2.3", forHTTPHeaderField: "User-Agent")
                 request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 404 {
@@ -245,7 +245,7 @@ final class NotchUpdater: ObservableObject {
         }
 
         if newFeatures.isEmpty && fixes.isEmpty && otherItems.isEmpty {
-            return defaultReleaseNotes(for: version)
+            return Self.defaultReleaseNotes(for: version)
         }
 
         var result: [String] = []
@@ -264,10 +264,10 @@ final class NotchUpdater: ObservableObject {
             result.append(contentsOf: otherItems.map { "• " + $0 })
         }
 
-        return result.isEmpty ? defaultReleaseNotes(for: version) : result.joined(separator: "\n")
+        return result.isEmpty ? NotchUpdater.defaultReleaseNotes(for: version) : result.joined(separator: "\n")
     }
 
-    private func defaultReleaseNotes(for version: String) -> String {
+    static func defaultReleaseNotes(for version: String = "") -> String {
         """
         WHAT'S NEW
         • App Version in Settings: Current version is now displayed directly in the Settings update card.
