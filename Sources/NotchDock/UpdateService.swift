@@ -65,7 +65,7 @@ final class NotchUpdater: ObservableObject {
             do {
                 var request = URLRequest(url: releaseAPI)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("NotchDock/1.2.1", forHTTPHeaderField: "User-Agent")
+                request.setValue("NotchDock/1.2.2", forHTTPHeaderField: "User-Agent")
                 request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 404 {

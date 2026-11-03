@@ -2078,8 +2078,16 @@ struct SettingsView: View {
                 .frame(width: 36, height: 36)
                 .background(Color.blue, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(updater.updateAvailable ? "New NotchDock update" : "Keep NotchDock up to date")
-                    .font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 6) {
+                    Text(updater.updateAvailable ? "New NotchDock update" : "NotchDock")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("v\(updater.currentVersion)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.6))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(ink.opacity(0.08), in: Capsule())
+                }
                 Text(updater.errorText ?? updater.statusText)
                     .font(.system(size: 10))
                     .foregroundStyle(ink.opacity(0.5))
