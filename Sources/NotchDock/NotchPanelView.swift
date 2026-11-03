@@ -129,19 +129,9 @@ final class NotchModel: ObservableObject {
         return permStatus == noErr
     }
 
-    static func showAutomationPermissionAlert(for appName: String) {
-        Task { @MainActor in
-            let alert = NSAlert()
-            alert.messageText = "Automation Permission Required"
-            alert.informativeText = "NotchDock needs permission to automate \(appName). Please allow NotchDock in System Settings → Privacy & Security → Automation."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Open System Settings")
-            alert.addButton(withTitle: "Cancel")
-            NSApp.activate(ignoringOtherApps: true)
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn {
-                openMusicAutomationSettings()
-            }
+    static func openAutomationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -149,7 +139,10 @@ final class NotchModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        _ = NotchModel.requestAutomationPermission(for: "com.apple.Notes")
+        let isNotesRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Notes" }
+        if !isNotesRunning {
+            _ = NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Notes.app"))
+        }
 
         let escapedHTML = trimmed
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -161,6 +154,7 @@ final class NotchModel: ObservableObject {
 
         let scriptSource = """
         tell application "Notes"
+            activate
             make new note with properties {body:"<div>\(escapedHTML)</div>"}
         end tell
         """
@@ -173,8 +167,8 @@ final class NotchModel: ObservableObject {
                     if let error {
                         let errNum = error[NSAppleScript.errorNumber] as? Int ?? 0
                         if errNum == -1743 || errNum == -1744 {
-                            self.statusMessage = "Notes permission required in Settings"
-                            NotchModel.showAutomationPermissionAlert(for: "Notes")
+                            self.statusMessage = "Allow NotchDock in System Settings → Automation"
+                            NotchModel.openAutomationSettings()
                         } else {
                             self.statusMessage = "Could not save to Notes"
                         }
@@ -481,8 +475,8 @@ final class NotchModel: ObservableObject {
             if let error {
                 let errNum = error[NSAppleScript.errorNumber] as? Int ?? 0
                 if errNum == -1743 || errNum == -1744 {
-                    statusMessage = "\(appName) permission required in Settings"
-                    NotchModel.showAutomationPermissionAlert(for: appName)
+                    statusMessage = "Allow \(appName) in System Settings → Automation"
+                    NotchModel.openAutomationSettings()
                 } else {
                     statusMessage = "Allow NotchDock to control \(appName) in System Settings"
                 }
