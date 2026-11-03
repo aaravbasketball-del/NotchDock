@@ -694,11 +694,6 @@ struct NotchPanelView: View {
                 .allowsHitTesting(false)
         }
         .clipShape(panelShape)
-        .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
-        // Match hover detection to the visible rounded surface. Using a
-        // rectangle here keeps the panel "active" over transparent corner
-        // space, which makes it feel like it refuses to close.
-        .compositingGroup()
         .contentShape(panelShape)
         .onHover(perform: onHoverChanged)
         .preferredColorScheme(isLightTheme ? .light : .dark)
@@ -729,10 +724,9 @@ struct NotchPanelView: View {
                     }
                 }
         }
-        .padding(.horizontal, 20).padding(.bottom, isCompactHUD ? 10 : 17)
+        .padding(.horizontal, 22).padding(.bottom, isCompactHUD ? 10 : 17)
         .frame(width: isCompactHUD ? 300 : 380, height: isCompactHUD ? 92 : 114)
         .background(surface.opacity(0.99), in: hudShape)
-        .compositingGroup()
         .clipShape(hudShape)
         .overlay(alignment: .top) {
             Capsule()
@@ -741,9 +735,6 @@ struct NotchPanelView: View {
                 .offset(y: -3)
                 .allowsHitTesting(false)
         }
-        // Keep the HUD edge seamless with the display too.
-        .background(surface.opacity(0.99), in: hudShape)
-        .shadow(color: .black.opacity(0.48), radius: 18, y: 10)
         .transition(.asymmetric(insertion: .scale(scale: 0.72, anchor: .center).combined(with: .opacity), removal: .scale(scale: 0.9).combined(with: .opacity)))
     }
 
@@ -752,18 +743,12 @@ struct NotchPanelView: View {
         return Color(hue: 0.34 - (0.34 * model.hudProgress), saturation: 0.8, brightness: 1)
     }
 
-    private var panelShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            cornerRadii: .init(topLeading: 0, bottomLeading: 26, bottomTrailing: 26, topTrailing: 0),
-            style: .continuous
-        )
+    private var panelShape: NotchSilhouette {
+        NotchSilhouette(topRadius: 16, bottomRadius: 26)
     }
 
-    private var hudShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            cornerRadii: .init(topLeading: 0, bottomLeading: 24, bottomTrailing: 24, topTrailing: 0),
-            style: .continuous
-        )
+    private var hudShape: NotchSilhouette {
+        NotchSilhouette(topRadius: 14, bottomRadius: 24)
     }
 
 struct NotchSilhouette: Shape {
@@ -855,7 +840,7 @@ struct NotchSilhouette: Shape {
                 .disabled(updater.isChecking || updater.isInstalling)
                 Button { onDismiss() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.62)).frame(width: 22, height: 22).background(ink.opacity(0.09), in: Circle()) }.buttonStyle(.plain)
             }.foregroundStyle(ink).frame(maxWidth: .infinity, alignment: .trailing)
-        }.padding(.horizontal, 22).frame(height: 40)
+        }.padding(.horizontal, 32).frame(height: 40)
         }
     }
 
@@ -933,7 +918,7 @@ struct NotchSilhouette: Shape {
                             .buttonStyle(AccentButton())
                     }
                     if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
-                }.padding(.horizontal, 22).padding(.top, 16).padding(.bottom, 14)
+                }.padding(.horizontal, 32).padding(.top, 16).padding(.bottom, 14)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -950,7 +935,7 @@ struct NotchSilhouette: Shape {
                             model.beginCustomTimer()
                         }
                         .buttonStyle(AccentButton())
-                    }.padding(.horizontal, 18)
+                    }.padding(.horizontal, 28)
                 }.padding(.bottom, 12)
 
                 ScrollView(showsIndicators: false) {
@@ -959,7 +944,7 @@ struct NotchSilhouette: Shape {
                         case .home: home; case .music: music; case .focus: focus
                         case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
                         }
-                    }.padding(.horizontal, 18).padding(.bottom, 16)
+                    }.padding(.horizontal, 28).padding(.bottom, 16)
                 }
             }
             if model.showingUpdateNotice {
