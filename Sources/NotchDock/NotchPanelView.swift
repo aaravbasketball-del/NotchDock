@@ -2006,6 +2006,24 @@ struct SettingsView: View {
                             .foregroundStyle(ink.opacity(0.55))
                             .fixedSize(horizontal: false, vertical: true)
 
+                        if indicatorMode == "notchdock" && !AXIsProcessTrusted() {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text("Accessibility permission is required to hide the macOS overlay.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(ink.opacity(0.75))
+                                Spacer()
+                                Button("Grant Access") {
+                                    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+                                    _ = AXIsProcessTrustedWithOptions(options)
+                                }
+                                .buttonStyle(ChipButton())
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                        }
+
                         Divider().opacity(0.15)
 
                         Toggle(isOn: $capsLockHUDEnabled) {

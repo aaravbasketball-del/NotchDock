@@ -185,6 +185,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSettingsOrScreenChanged() {
         updateDetectorDimensions()
+        checkAndInstallMediaEventTap()
+    }
+
+    func checkAndInstallMediaEventTap() {
+        if mediaEventTap == nil {
+            installMediaEventTap()
+        }
     }
 
     private func makePanel() {
@@ -398,6 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installMediaEventTap() {
+        if mediaEventTap != nil { return }
         let mask = (CGEventMask(1) << 14) // systemDefined
         let pointer = Unmanaged.passUnretained(self).toOpaque()
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -407,32 +415,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let tap = app.mediaEventTap { CGEvent.tapEnable(tap: tap, enable: true) }
                 return Unmanaged.passUnretained(event)
             }
-            if app.indicatorMode == "notchdock", let nsEvent = NSEvent(cgEvent: event), nsEvent.subtype.rawValue == 8 {
-                let keyCode = (nsEvent.data1 >> 16) & 0xFF
-                let keyFlags = nsEvent.data1 & 0xFFFF
-                let keyState = (keyFlags & 0xFF00) >> 8
-                if keyState == 0xA || keyState == 0x1 {
-                    switch keyCode {
-                    case 0:
-                        Task { @MainActor in app.stepVolume(up: true) }
-                        return nil
-                    case 1:
-                        Task { @MainActor in app.stepVolume(up: false) }
-                        return nil
-                    case 2:
-                        Task { @MainActor in app.stepBrightness(up: true) }
-                        return nil
-                    case 3:
-                        Task { @MainActor in app.stepBrightness(up: false) }
-                        return nil
-                    case 7:
-                        Task { @MainActor in app.toggleMute() }
-                        return nil
-                    default:
-                        break
-                    }
+
+            guard let nsEvent = NSEvent(cgEvent: event), nsEvent.subtype.rawValue == 8 else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            let keyCode = (nsEvent.data1 >> 16) & 0xFF
+            let keyFlags = nsEvent.data1 & 0xFFFF
+            let keyState = (keyFlags & 0xFF00) >> 8
+            let isDown = (keyState == 0xA || keyState == 0xB || keyState == 0x1)
+
+            guard isDown else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            let mode = app.indicatorMode
+
+            // Only macOS: Let macOS show its stock overlay; do not show NotchDock HUD
+            if mode == "macos" {
+                return Unmanaged.passUnretained(event)
+            }
+
+            // Only NotchDock: Adjust volume/brightness directly and suppress the stock macOS overlay
+            if mode == "notchdock" {
+                switch keyCode {
+                case 0:
+                    Task { @MainActor in app.stepVolume(up: true) }
+                    return nil
+                case 1:
+                    Task { @MainActor in app.stepVolume(up: false) }
+                    return nil
+                case 2:
+                    Task { @MainActor in app.stepBrightness(up: true) }
+                    return nil
+                case 3:
+                    Task { @MainActor in app.stepBrightness(up: false) }
+                    return nil
+                case 7:
+                    Task { @MainActor in app.toggleMute() }
+                    return nil
+                default:
+                    return Unmanaged.passUnretained(event)
                 }
             }
+
+            // Both: Trigger NotchDock live HUD AND pass event through to macOS so both display
+            if mode == "both" {
+                switch keyCode {
+                case 0:
+                    Task { @MainActor in app.showLiveVolumeHUD(symbol: "speaker.wave.3.fill") }
+                case 1:
+                    Task { @MainActor in app.showLiveVolumeHUD(symbol: "speaker.wave.1.fill") }
+                case 2:
+                    Task { @MainActor in app.showLiveBrightnessHUD(symbol: "sun.max.fill") }
+                case 3:
+                    Task { @MainActor in app.showLiveBrightnessHUD(symbol: "sun.min.fill") }
+                case 7:
+                    Task { @MainActor in app.showLiveVolumeHUD(symbol: "speaker.slash.fill") }
+                default:
+                    break
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
             return Unmanaged.passUnretained(event)
         }
 
@@ -466,6 +511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard event.type == .systemDefined else { return }
         guard event.subtype.rawValue == 8 else { return }
         if indicatorMode == "macos" { return }
+        if mediaEventTap != nil { return }
 
         let keyCode = (event.data1 >> 16) & 0xFF
         let now = ProcessInfo.processInfo.systemUptime
