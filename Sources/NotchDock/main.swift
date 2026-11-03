@@ -71,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointerTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.checkPointerLocation() }
         }
+        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkAndInstallMediaEventTap() }
+        }
         if UserDefaults.standard.bool(forKey: "notchdock.launchAtLogin") {
             if #available(macOS 13.0, *) {
                 if SMAppService.mainApp.status != .enabled {
@@ -189,8 +192,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func checkAndInstallMediaEventTap() {
+        if indicatorMode == "macos" {
+            if let tap = mediaEventTap {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                if let source = mediaRunLoopSource {
+                    CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+                }
+                CFMachPortInvalidate(tap)
+                mediaEventTap = nil
+                mediaRunLoopSource = nil
+            }
+            return
+        }
         if mediaEventTap == nil {
             installMediaEventTap()
+        } else if let tap = mediaEventTap, !CGEvent.tapIsEnabled(tap: tap) {
+            CGEvent.tapEnable(tap: tap, enable: true)
         }
     }
 

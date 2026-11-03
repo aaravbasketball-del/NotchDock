@@ -2007,18 +2007,24 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
 
                         if indicatorMode == "notchdock" && !AXIsProcessTrusted() {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                Text("Accessibility permission is required to hide the macOS overlay.")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(ink.opacity(0.75))
-                                Spacer()
-                                Button("Grant Access") {
-                                    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-                                    _ = AXIsProcessTrustedWithOptions(options)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                    Text("Accessibility permission is required to hide the macOS overlay.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(ink.opacity(0.85))
+                                    Spacer()
+                                    Button("Grant Access") {
+                                        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+                                        _ = AXIsProcessTrustedWithOptions(options)
+                                        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+                                    }
+                                    .buttonStyle(ChipButton())
                                 }
-                                .buttonStyle(ChipButton())
+                                Text("Tip: In System Settings → Privacy & Security → Accessibility, toggle NotchDock off and on (or remove and re-add it) after updating.")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(ink.opacity(0.6))
                             }
                             .padding(10)
                             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
