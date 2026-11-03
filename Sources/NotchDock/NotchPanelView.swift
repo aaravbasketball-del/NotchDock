@@ -651,10 +651,7 @@ struct NotchPanelView: View {
             }
         }
         .frame(width: model.hudActive ? (isCompactHUD ? 300 : 380) : (model.isExpanded ? notchDockPanelWidth : collapsedPanelWidth), height: model.hudActive ? (isCompactHUD ? 92 : 114) : (model.isExpanded ? notchDockPanelHeight : notchDockCollapsedHeight), alignment: .top)
-        .background(surface.opacity(0.99))
-        // Keep the rounded Notchy silhouette, with a solid black backing behind
-        // it so the desktop can never show through the corners.
-        .clipShape(panelShape)
+        .background(surface.opacity(0.99), in: panelShape)
         .overlay(alignment: .top) {
             // A small, borderless bridge makes the surface feel continuous
             // with the physical notch instead of stopping abruptly at it.
@@ -664,11 +661,6 @@ struct NotchPanelView: View {
                 .offset(y: -4)
                 .allowsHitTesting(false)
         }
-        // No outline at the display edge: the surface should merge directly
-        // into the top of the screen instead of showing a grey seam.
-        // Keep the backing inside the same rounded silhouette so no square
-        // rectangle can show through at the corners.
-        .background(surface.opacity(0.99), in: panelShape)
         .clipShape(panelShape)
         .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
         // Match hover detection to the visible rounded surface. Using a
@@ -705,7 +697,7 @@ struct NotchPanelView: View {
                     }
                 }
         }
-        .padding(.horizontal, 20).padding(.bottom, isCompactHUD ? 10 : 17)
+        .padding(.horizontal, 28).padding(.bottom, isCompactHUD ? 10 : 17)
         .frame(width: isCompactHUD ? 300 : 380, height: isCompactHUD ? 92 : 114)
         .background(surface.opacity(0.99), in: hudShape)
         .compositingGroup()
@@ -825,7 +817,7 @@ struct NotchSilhouette: Shape {
                 .disabled(updater.isChecking || updater.isInstalling)
                 Button { onDismiss() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ink.opacity(0.62)).frame(width: 22, height: 22).background(ink.opacity(0.09), in: Circle()) }.buttonStyle(.plain)
             }.foregroundStyle(ink).frame(maxWidth: .infinity, alignment: .trailing)
-        }.padding(.horizontal, 22).frame(height: 40)
+        }.padding(.horizontal, 36).frame(height: 40)
         }
     }
 
@@ -903,7 +895,7 @@ struct NotchSilhouette: Shape {
                             .buttonStyle(AccentButton())
                     }
                     if !model.statusMessage.isEmpty { Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(ink.opacity(0.5)).lineLimit(1) }
-                }.padding(.horizontal, 21).padding(.top, 16).padding(.bottom, 14)
+                }.padding(.horizontal, 36).padding(.top, 16).padding(.bottom, 14)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -920,7 +912,7 @@ struct NotchSilhouette: Shape {
                             model.beginCustomTimer()
                         }
                         .buttonStyle(AccentButton())
-                    }.padding(.horizontal, 18)
+                    }.padding(.horizontal, 34)
                 }.padding(.bottom, 12)
 
                 ScrollView(showsIndicators: false) {
@@ -929,7 +921,7 @@ struct NotchSilhouette: Shape {
                         case .home: home; case .music: music; case .focus: focus
                         case .clipboard: clipboard; case .shelf: shelf; case .notes: notes; case .tools: tools
                         }
-                    }.padding(.horizontal, 18).padding(.bottom, 16)
+                    }.padding(.horizontal, 34).padding(.bottom, 16)
                 }
             }
             if model.showingUpdateNotice {
@@ -1441,7 +1433,7 @@ struct NotchSilhouette: Shape {
                 }
 
                 if !model.appleNotes.isEmpty {
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(model.appleNotes) { item in
                                 Button {
@@ -1483,7 +1475,7 @@ struct NotchSilhouette: Shape {
                     }
                     .frame(maxHeight: 220)
                 } else if !model.recentNotes.isEmpty {
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(model.recentNotes, id: \.self) { item in
                                 HStack(alignment: .top, spacing: 8) {
