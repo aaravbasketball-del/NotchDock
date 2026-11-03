@@ -53,6 +53,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.object(forKey: "notchdock.systemHUDsEnabled") as? Bool ?? true
     }
 
+    private var animationsEnabled: Bool {
+        UserDefaults.standard.object(forKey: "notchdock.animationsEnabled") as? Bool ?? true
+    }
+
+    private var animationDuration: Double {
+        guard animationsEnabled else { return 0.0 }
+        let speed = UserDefaults.standard.string(forKey: "notchdock.animationSpeed") ?? "normal"
+        switch speed {
+        case "fast": return 0.20
+        case "smooth": return 0.46
+        default: return 0.32
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         model.onHUDVisibilityChanged = { [weak self] visible in self?.setHUDMode(visible) }
@@ -249,7 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.layer?.isOpaque = false
         hostingView.layer?.masksToBounds = false
         panel.contentView = hostingView
-        panel.setFrame(notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockCollapsedHeight), display: false)
+        let (closedW, closedH) = notchClosedDimensions(on: screen)
+        panel.setFrame(notchAnchoredFrame(on: screen, width: closedW, height: closedH), display: false)
         panel.orderOut(nil)
         self.panel = panel
     }
@@ -275,10 +290,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel?.setFrame(notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockPanelHeight), display: false)
     }
 
+    private func notchClosedDimensions(on screen: NSScreen) -> (width: CGFloat, height: CGFloat) {
+        if model.isTimerRunning { return (width: notchDockTimerWidth, height: notchDockCollapsedHeight) }
+        if model.musicIsPlaying { return (width: notchDockMusicWidth, height: notchDockCollapsedHeight) }
+        let (triggerW, triggerH) = currentTriggerDimensions(on: screen)
+        return (width: max(triggerW, 160), height: triggerH)
+    }
+
     private var collapsedPanelWidth: CGFloat {
         if model.isTimerRunning { return notchDockTimerWidth }
         if model.musicIsPlaying { return notchDockMusicWidth }
-        return notchDockPanelWidth
+        return 180
     }
 
     /// Uses the actual menu-bar regions reported by macOS. The gap between the
@@ -302,24 +324,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPanel() {
-        guard let panel else { return }
+        guard let panel, let screen = targetScreen() else { return }
         cancelClose()
         closeAnimationTask?.cancel()
+        closeAnimationTask = nil
         guard !model.isExpanded else {
             panel.orderFrontRegardless()
             return
         }
-        model.isExpanded = true
-        detector?.alphaValue = 0
-        if let screen = targetScreen() {
-            let frame = notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockPanelHeight)
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.32
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().setFrame(frame, display: true)
-            }
+        let expandedFrame = notchAnchoredFrame(on: screen, width: notchDockPanelWidth, height: notchDockPanelHeight)
+        let (closedW, closedH) = notchClosedDimensions(on: screen)
+        let closedFrame = notchAnchoredFrame(on: screen, width: closedW, height: closedH)
+
+        if !panel.isVisible {
+            panel.setFrame(closedFrame, display: false)
         }
         panel.orderFrontRegardless()
+        detector?.alphaValue = 0
+
+        model.isExpanded = true
+        let duration = animationDuration
+        if duration > 0 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                panel.animator().setFrame(expandedFrame, display: true)
+            }
+        } else {
+            panel.setFrame(expandedFrame, display: true)
+        }
     }
 
     private func setHUDMode(_ visible: Bool) {
@@ -758,39 +791,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginAnimatedClose() {
         guard !model.hudActive else { return }
-        model.isExpanded = false
-        if let screen = targetScreen(), let panel {
-            let frame = notchAnchoredFrame(on: screen, width: collapsedPanelWidth, height: notchDockCollapsedHeight)
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.28
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                panel.animator().setFrame(frame, display: true)
-            }
-        }
+        guard let screen = targetScreen(), let panel else { return }
         closeAnimationTask?.cancel()
-        closeAnimationTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(360))
-            guard let self, !Task.isCancelled, !self.model.isExpanded else { return }
-            if self.model.isTimerRunning || self.model.musicIsPlaying {
-                self.panel?.orderFrontRegardless()
-            } else {
-                self.panel?.orderOut(nil)
+        closeAnimationTask = nil
+        model.isExpanded = false
+
+        let (closedW, closedH) = notchClosedDimensions(on: screen)
+        let closedFrame = notchAnchoredFrame(on: screen, width: closedW, height: closedH)
+
+        let duration = animationDuration
+        if duration > 0 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                panel.animator().setFrame(closedFrame, display: true)
+            } completionHandler: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard !self.model.isExpanded else { return }
+                    if self.model.isTimerRunning || self.model.musicIsPlaying {
+                        self.panel?.orderFrontRegardless()
+                    } else {
+                        self.panel?.orderOut(nil)
+                    }
+                    self.detector?.orderFrontRegardless()
+                    self.detector?.alphaValue = 1
+                }
             }
-            self.detector?.orderFrontRegardless()
-            self.detector?.alphaValue = 1
-            self.closeAnimationTask = nil
+        } else {
+            panel.setFrame(closedFrame, display: false)
+            if model.isTimerRunning || model.musicIsPlaying {
+                panel.orderFrontRegardless()
+            } else {
+                panel.orderOut(nil)
+            }
+            detector?.orderFrontRegardless()
+            detector?.alphaValue = 1
         }
     }
 
     private func hidePanel() {
         guard !model.hudActive else { return }
-        closeTask?.cancel()
-        closeAnimationTask?.cancel()
-        closeTask = nil
-        closeAnimationTask = nil
+        cancelClose()
         model.isExpanded = false
-        if let screen = targetScreen() {
-            panel?.setFrame(notchAnchoredFrame(on: screen, width: collapsedPanelWidth, height: notchDockCollapsedHeight), display: false)
+        if let screen = targetScreen(), let panel {
+            let (closedW, closedH) = notchClosedDimensions(on: screen)
+            panel.setFrame(notchAnchoredFrame(on: screen, width: closedW, height: closedH), display: false)
         }
         if model.isTimerRunning || model.musicIsPlaying {
             panel?.orderFrontRegardless()

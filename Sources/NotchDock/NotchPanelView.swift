@@ -669,6 +669,8 @@ struct NotchPanelView: View {
     let onDismiss: () -> Void
     @AppStorage("notchdock.theme") private var themeName = "black"
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
+    @AppStorage("notchdock.animationsEnabled") private var animationsEnabled = true
+    @AppStorage("notchdock.animationSpeed") private var animationSpeed = "normal"
     @FocusState private var customTimerFieldFocused: Bool
     @StateObject private var shelfState = ShelfViewState()
     @StateObject private var updater = NotchUpdater()
@@ -680,7 +682,13 @@ struct NotchPanelView: View {
     private var collapsedPanelWidth: CGFloat {
         if model.isTimerRunning { return notchDockTimerWidth }
         if model.musicIsPlaying { return notchDockTimerWidth }
-        return notchDockPanelWidth
+        return 180
+    }
+
+    private var expansionAnimation: Animation {
+        guard animationsEnabled else { return .linear(duration: 0) }
+        let duration = animationSpeed == "fast" ? 0.20 : (animationSpeed == "smooth" ? 0.46 : 0.32)
+        return .spring(response: duration, dampingFraction: 0.82)
     }
 
     var body: some View {
@@ -690,7 +698,15 @@ struct NotchPanelView: View {
             } else {
                 VStack(spacing: 0) {
                     notchRail
-                    if model.isExpanded { expandedContent.transition(.move(edge: .top).combined(with: .opacity)) }
+                    if model.isExpanded {
+                        expandedContent
+                            .transition(
+                                .asymmetric(
+                                    insertion: .scale(scale: 0.84, anchor: .top).combined(with: .opacity),
+                                    removal: .scale(scale: 0.78, anchor: .top).combined(with: .opacity)
+                                )
+                            )
+                    }
                 }
             }
         }
@@ -701,7 +717,7 @@ struct NotchPanelView: View {
             // with the physical notch instead of stopping abruptly at it.
             Capsule()
                 .fill(surface)
-                .frame(width: 360, height: 14)
+                .frame(width: model.isExpanded ? 360 : min(collapsedPanelWidth, 240), height: 14)
                 .offset(y: -4)
                 .allowsHitTesting(false)
         }
@@ -710,7 +726,7 @@ struct NotchPanelView: View {
         .onHover(perform: onHoverChanged)
         .preferredColorScheme(isLightTheme ? .light : .dark)
         .onAppear { updater.checkForUpdates() }
-        .animation(.spring(response: 0.34, dampingFraction: 0.84), value: model.isExpanded)
+        .animation(expansionAnimation, value: model.isExpanded)
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: model.hudActive)
         .animation(.easeInOut(duration: 0.2), value: model.selectedTab)
     }
@@ -1836,7 +1852,20 @@ struct SettingsView: View {
     @AppStorage("notchdock.fakeNotchOnlyWithoutPhysicalNotch") private var fakeNotchOnlyWithoutPhysicalNotch = false
     @AppStorage("notchdock.fakeNotchShowCamera") private var fakeNotchShowCamera = true
     @AppStorage("notchdock.showTriggerBump") private var showTriggerBump = false
+    @AppStorage("notchdock.animationsEnabled") private var animationsEnabled = true
+    @AppStorage("notchdock.animationSpeed") private var animationSpeed = "normal"
     @StateObject private var updater = NotchUpdater()
+
+    private var animationSpeedDescription: String {
+        switch animationSpeed {
+        case "fast":
+            return "Snappy, quick 0.20s spring expansion from the notch."
+        case "smooth":
+            return "Cinematic, fluid 0.46s bloom with gentle momentum."
+        default:
+            return "Natural, balanced 0.32s expansion matching macOS springs."
+        }
+    }
 
     private var isLightTheme: Bool { themeName == "white" }
     private var ink: Color { isLightTheme ? .black : .white }
@@ -2004,6 +2033,36 @@ struct SettingsView: View {
                             .tint(ink)
                         Text("A tiny delay prevents accidental closes when you skim the edge of the notch.")
                             .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                    }
+                }
+                settingsSection("Animation & transitions") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle(isOn: $animationsEnabled) {
+                            Label("Enable NotchDock animations", systemImage: "sparkles")
+                        }
+                        .toggleStyle(.switch)
+
+                        if animationsEnabled {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Animation speed")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(ink.opacity(0.75))
+                                Picker("Animation speed", selection: $animationSpeed) {
+                                    Text("Fast").tag("fast")
+                                    Text("Normal").tag("normal")
+                                    Text("Smooth").tag("smooth")
+                                }
+                                .pickerStyle(.segmented)
+
+                                Text(animationSpeedDescription)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(ink.opacity(0.52))
+                            }
+                        } else {
+                            Text("When animations are disabled, NotchDock opens and closes instantly.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(ink.opacity(0.48))
+                        }
                     }
                 }
                 settingsSection("Volume & Brightness indicators") {

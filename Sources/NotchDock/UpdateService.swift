@@ -65,7 +65,7 @@ final class NotchUpdater: ObservableObject {
             do {
                 var request = URLRequest(url: releaseAPI)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("NotchDock/1.2.4", forHTTPHeaderField: "User-Agent")
+                request.setValue("NotchDock/1.3", forHTTPHeaderField: "User-Agent")
                 request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 404 {
@@ -270,17 +270,18 @@ final class NotchUpdater: ObservableObject {
     static func defaultReleaseNotes(for version: String = "") -> String {
         """
         WHAT'S NEW
-        • Volume & Brightness Display Modes: Choose between Both, Only NotchDock, or Only macOS in Settings.
-        • In-App Accessibility Helper: Instant permission check and direct button to enable suppressing the stock macOS overlay.
-        • Real-Time Media Tap Recovery: Automatically hooks media keys as soon as permissions are granted without app restart.
+        • Notch Bloom Animation: Fluidly expands outward from the camera notch and smoothly retracts back into it.
+        • Animation Settings: Choose animation speed (Fast, Normal, Smooth) or toggle animations off for instant display.
+        • Volume & Brightness Indicator Modes: Choose between Both, Only NotchDock, or Only macOS in Settings.
+        • Extended Indicator Display: Volume & brightness bars now stay comfortably visible for 2.4s with smooth fade-out.
         • App Version in Settings: Current version is now displayed directly in the Settings update card.
-        • Two-Way Apple Notes Sync: Type quick notes in the notch to auto-save to Apple Notes, with click-to-open feed.
 
         WHAT'S FIXED
+        • No Leftover Bar: Eliminated the lingering delay on close so the dock closes cleanly with zero clipping.
         • Media Key Suppression: Seamlessly suppresses stock macOS HUD in "Only NotchDock" mode with key-repeat support.
-        • Outward Rounded Top Corners: Restored smooth fillets merging directly into the display bezel without clipping.
-        • Square Shadow Artifact: Eliminated the transparent rectangular box and side shadow clipping.
-        • Apple Notes Saving: Fixed AppleScript syntax and eliminated modal alert lockups.
+        • Automatic Tap Recovery: Hooks media keys automatically when permissions are granted without app restart.
+        • Outward Bezel Fillets: Smooth top fillets merging into the display bezel without white shadow boxes.
+        • Quick Apple Notes: Non-blocking note creation without modal alert freezes.
         """
     }
 }
