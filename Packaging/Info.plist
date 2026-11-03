@@ -21,7 +21,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>NotchDock can control Apple Music or Spotify playback when you use the media controls.</string>
+	<string>NotchDock uses Apple Events to control media playback and save quick notes to the Notes app.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>NotchDock shows a live camera preview in the dashboard when you choose to use it.</string>
 	<key>NSPrefersDisplaySafeAreaCompatibilityMode</key>

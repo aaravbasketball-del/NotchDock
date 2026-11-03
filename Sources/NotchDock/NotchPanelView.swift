@@ -11,6 +11,8 @@ final class NotchModel: ObservableObject {
     @Published var isExpanded = false
     @Published var selectedTab: NotchTab = .home
     @Published var note = "" { didSet { UserDefaults.standard.set(note, forKey: "notchdock.quickNote") } }
+    @Published var quickNoteDraft = ""
+    @Published var recentNotes: [String] = []
     @Published var clips: [Clip] = []
     @Published var pinnedIDs: Set<UUID> = []
     @Published var shelfURLs: [URL] = []
@@ -70,6 +72,7 @@ final class NotchModel: ObservableObject {
             defaults.removeObject(forKey: "notchdock.pendingUpdateMessage")
         }
         note = defaults.string(forKey: "notchdock.quickNote") ?? ""
+        recentNotes = defaults.stringArray(forKey: "notchdock.recentNotes") ?? []
         shelfURLs = (defaults.stringArray(forKey: "notchdock.shelf") ?? []).compactMap(URL.init(string:))
         if let data = defaults.data(forKey: "notchdock.clipData"),
            let saved = try? JSONDecoder().decode([Clip].self, from: data) {
@@ -84,6 +87,62 @@ final class NotchModel: ObservableObject {
 
     func dismissUpdateNotice() {
         showingUpdateNotice = false
+    }
+
+    func submitQuickNote() {
+        let text = quickNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        saveNoteToAppleNotes(text)
+        recentNotes.insert(text, at: 0)
+        recentNotes = Array(recentNotes.prefix(30))
+        UserDefaults.standard.set(recentNotes, forKey: "notchdock.recentNotes")
+        quickNoteDraft = ""
+    }
+
+    func saveNoteToAppleNotes(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Sanitize for AppleScript string literal and HTML formatting in Notes.app
+        let escapedHTML = trimmed
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\n", with: "<br>")
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        let scriptSource = """
+        tell application "Notes"
+            try
+                tell default account to tell folder "Notes"
+                    make new note with properties {body:"<div>\(escapedHTML)</div>"}
+                end tell
+            on error
+                try
+                    make new note with properties {body:"<div>\(escapedHTML)</div>"}
+                on error
+                    tell default account
+                        make new note with properties {body:"<div>\(escapedHTML)</div>"}
+                    end tell
+                end try
+            end try
+        end tell
+        """
+
+        Task {
+            if let script = NSAppleScript(source: scriptSource) {
+                var error: NSDictionary?
+                script.executeAndReturnError(&error)
+                await MainActor.run {
+                    if error == nil {
+                        self.statusMessage = "Saved to Apple Notes"
+                    } else {
+                        self.statusMessage = "Note saved"
+                    }
+                }
+            }
+        }
     }
 
     func readPasteboard() {
@@ -974,12 +1033,26 @@ struct NotchSilhouette: Shape {
     private var quickNoteDashboard: some View {
         VStack(alignment: .leading, spacing: 10) {
             dashboardHeader("Quick Note", symbol: "note.text")
-            Text(model.note.isEmpty ? "Capture a thought" : model.note)
+            TextField("Type a note & press Return…", text: $model.quickNoteDraft)
+                .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(ink.opacity(0.72))
-                .lineLimit(2)
-            Spacer()
-            Button("Open notes") { model.selectedTab = .notes }.buttonStyle(ChipButton())
+                .foregroundStyle(ink)
+                .padding(9)
+                .background(ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                .onSubmit {
+                    model.submitQuickNote()
+                }
+                .onTapGesture {
+                    model.onRequestKeyboardFocus?()
+                }
+            HStack {
+                Text(model.statusMessage.isEmpty ? "Press ↵ to save to Apple Notes" : model.statusMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(ink.opacity(0.48))
+                    .lineLimit(1)
+                Spacer()
+                Button("Open notes") { model.selectedTab = .notes }.buttonStyle(ChipButton())
+            }
         }
         .dashboardSurface(ink: ink)
     }
@@ -1205,9 +1278,69 @@ struct NotchSilhouette: Shape {
         }
     }
     private var notes: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Saved on this Mac as you type.").font(.system(size: 10)).foregroundStyle(ink.opacity(0.48))
-            TextEditor(text: $model.note).font(.system(size: 13)).scrollContentBackground(.hidden).foregroundStyle(ink).padding(10).frame(height: 260).background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 13))
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Quick Notes").font(.system(size: 15, weight: .semibold, design: .rounded))
+                    Text("Type a note and press Return (Enter). It automatically saves to your Mac's Notes app.")
+                        .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
+                }
+                Spacer()
+                Button {
+                    NSWorkspace.shared.open(URL(string: "notes:") ?? URL(fileURLWithPath: "/System/Applications/Notes.app"))
+                } label: {
+                    Label("Open Notes.app", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(AccentButton())
+            }
+
+            HStack(spacing: 8) {
+                TextField("Write a note and press Enter…", text: $model.quickNoteDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ink)
+                    .padding(12)
+                    .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 11))
+                    .onSubmit {
+                        model.submitQuickNote()
+                    }
+                    .onTapGesture {
+                        model.onRequestKeyboardFocus?()
+                    }
+
+                Button {
+                    model.submitQuickNote()
+                } label: {
+                    Label("Save", systemImage: "arrow.turn.down.left")
+                }
+                .buttonStyle(AccentButton())
+                .disabled(model.quickNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !model.recentNotes.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Recently Saved to Notes").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(ink.opacity(0.55))
+                        Spacer()
+                        if !model.statusMessage.isEmpty {
+                            Text(model.statusMessage).font(.system(size: 10)).foregroundStyle(.green.opacity(0.8))
+                        }
+                    }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(model.recentNotes, id: \.self) { item in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "note.text").font(.system(size: 11)).foregroundStyle(ink.opacity(0.45)).padding(.top, 2)
+                                    Text(item).font(.system(size: 12)).foregroundStyle(ink.opacity(0.85)).frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(10)
+                                .background(ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
         }
     }
     private var tools: some View {
