@@ -343,7 +343,10 @@ final class NotchModel: ObservableObject {
         let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
         let artist = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
         let album = parts[3].trimmingCharacters(in: .whitespacesAndNewlines)
-        let duration = Double(parts[4].replacingOccurrences(of: ",", with: ".")) ?? 0
+        let rawDuration = Double(parts[4].replacingOccurrences(of: ",", with: ".")) ?? 0
+        // Spotify's AppleScript dictionary reports track duration in milliseconds
+        // (e.g. 210000 for a 3.5-minute song), whereas Apple Music reports seconds.
+        let duration = rawDuration > 1000 ? rawDuration / 1000.0 : rawDuration
         let position = Double(parts[5].replacingOccurrences(of: ",", with: ".")) ?? 0
         let hasTrack = !title.isEmpty && state != "stopped"
         let wasPlaying = musicIsPlaying
@@ -716,41 +719,81 @@ struct NotchPanelView: View {
 
     private var updateNoticeCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 36, height: 36)
-                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("NotchDock updated")
+                    .background(
+                        LinearGradient(colors: [Color(red: 1.0, green: 0.45, blue: 0.1), Color(red: 0.95, green: 0.22, blue: 0.15)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("What's New in NotchDock")
                         .font(.system(size: 17, weight: .bold, design: .rounded))
                     if !model.updateNoticeVersion.isEmpty {
                         Text("Version \(model.updateNoticeVersion)")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(ink.opacity(0.48))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 1.0, green: 0.5, blue: 0.15))
                     }
                 }
                 Spacer()
-            }
-            Text(model.updateNoticeMessage)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(ink.opacity(0.7))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Done") {
+                Button {
                     model.dismissUpdateNotice()
                     onDismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            LinearGradient(colors: [Color(red: 1.0, green: 0.4, blue: 0.15), Color(red: 0.95, green: 0.2, blue: 0.15)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: Circle()
+                        )
+                        .shadow(color: Color.orange.opacity(0.35), radius: 4, y: 1)
                 }
-                .buttonStyle(AccentButton())
+                .buttonStyle(.plain)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.updateNoticeMessage.isEmpty ? "NotchDock has been updated with the latest improvements." : model.updateNoticeMessage)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.85))
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            HStack {
+                Spacer()
+                Button {
+                    model.dismissUpdateNotice()
+                    onDismiss()
+                } label: {
+                    Text("Got it")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 7)
+                        .background(
+                            LinearGradient(colors: [Color(red: 1.0, green: 0.45, blue: 0.1), Color(red: 0.95, green: 0.25, blue: 0.15)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(22)
-        .frame(maxWidth: 560)
+        .frame(maxWidth: 540)
         .background(surface.opacity(0.98), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(ink.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.42), radius: 28, y: 14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(LinearGradient(colors: [Color.orange.opacity(0.4), Color.red.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.5)
+        )
+        .shadow(color: .black.opacity(0.45), radius: 28, y: 14)
     }
 
     private var home: some View {

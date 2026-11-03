@@ -4,11 +4,19 @@ import CoreAudio
 import IOKit.graphics
 import Darwin
 
-let notchDockPanelWidth: CGFloat = 1200
-let notchDockPanelHeight: CGFloat = 620
-let notchDockCollapsedHeight: CGFloat = 40
-let notchDockTimerWidth: CGFloat = 300
-let notchDockMusicWidth: CGFloat = 300
+private enum NotchDockMetrics {
+    static let panelWidth: CGFloat = 1200
+    static let panelHeight: CGFloat = 620
+    static let collapsedHeight: CGFloat = 40
+    static let timerWidth: CGFloat = 300
+    static let musicWidth: CGFloat = 300
+}
+
+let notchDockPanelWidth: CGFloat = NotchDockMetrics.panelWidth
+let notchDockPanelHeight: CGFloat = NotchDockMetrics.panelHeight
+let notchDockCollapsedHeight: CGFloat = NotchDockMetrics.collapsedHeight
+let notchDockTimerWidth: CGFloat = NotchDockMetrics.timerWidth
+let notchDockMusicWidth: CGFloat = NotchDockMetrics.musicWidth
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -121,7 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: NotchPanelView(
             model: model,
             onHoverChanged: { [weak self] inside in
-                if inside { self?.cancelClose() } else { self?.scheduleClose() }
+                guard let self else { return }
+                if inside {
+                    if !self.model.isExpanded && !self.model.hudActive {
+                        self.showPanel()
+                    } else {
+                        self.cancelClose()
+                    }
+                } else {
+                    self.scheduleClose()
+                }
             },
             onDismiss: { [weak self] in self?.hidePanel() }
         ))
@@ -270,6 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if !model.isExpanded {
+            if let detector, detector.frame.contains(NSEvent.mouseLocation) {
+                showPanel()
+                return
+            }
             if (model.isTimerRunning || model.musicIsPlaying) && !model.hudActive, let screen = targetScreen() {
                 ensureCompactStripVisible(panel: panel, screen: screen)
             }
