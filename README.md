@@ -1,24 +1,89 @@
 # NotchDock
 
-NotchDock is a native SwiftUI macOS notch workspace. It uses a black surface that grows down from and around the built-in notch on hover; it has no detached pill or Liquid Glass styling.
+NotchDock is a native SwiftUI macOS notch companion and workspace that drops down seamlessly from the MacBook camera notch. It features smooth outward-curving top fillets that merge directly into the display bezel, intuitive media controls, and productivity tools right at your fingertips.
 
-## Working features
+---
 
-- Hover activation and notch-anchored panel
-- Locally saved quick note
-- Clipboard history with search, pinning, and copy actions
-- Drag-and-drop file shelf that remembers staged file locations
-- Focus countdown, presets, reset, completion sound, and stopwatch
-- Keep Awake power assertion
-- Apple Music play, pause, next, and previous controls
-- Feature map documenting additional Notchy capabilities for follow-on implementation
+## Installation
 
-## Run
+### Method 1: Download Pre-built Release (Recommended)
 
-Requires macOS 13 or later and Xcode's Swift tools. Open `Package.swift` in Xcode and run the NotchDock scheme, or run `swift run` from this folder.
+1. Head over to the latest release on GitHub: [NotchDock Releases](https://github.com/aaravbasketball-del/NotchDock/releases).
+2. Download **`NotchDock.dmg`** (or `NotchDock.zip`).
+3. Open `NotchDock.dmg` and drag **NotchDock** into your **Applications** folder (`/Applications`).
+4. Launch **NotchDock** from Launchpad, Spotlight, or your Applications folder.
 
-The app currently uses the primary built-in notch display. Integrations that need additional permissions or services are identified in the app's Tools feature map; they are not represented as working controls until implemented.
+> **First Launch on macOS**: If macOS Gatekeeper displays an unidentified developer prompt on the first launch:
+> 1. Control-click (or right-click) **NotchDock.app** in Finder.
+> 2. Click **Open** from the context menu.
+> 3. Click **Open** in the confirmation dialog.
 
-## Releases and updates
+---
 
-Push a version tag such as `v0.3` to the public GitHub repository. The release workflow builds universal Apple-silicon and Intel apps, publishes a DMG and ZIP, and creates a GitHub Release. NotchDock checks that release feed from Settings and shows a blue update button when a newer version is available.
+### Built-in Auto Updates
+
+NotchDock checks GitHub Releases automatically on launch and in the background. When a new update is published:
+- An **Update** button will appear in the top-right corner of the notch rail.
+- Click **Update** to automatically download, install to `/Applications`, and restart the app.
+- A **What's New** notice card will pop up after each update with release highlights.
+
+---
+
+### Permissions & Integrations
+
+Depending on the features you want to use, macOS may prompt you for optional permissions:
+
+- **Automation / Apple Events**:
+  - **Apple Notes**: Required to automatically save Quick Notes to the native Notes app when you press Enter.
+  - **Spotify & Apple Music**: Required to read now-playing track information and send play, pause, and skip commands.
+- **Accessibility**:
+  - Required if you choose the **"Only NotchDock"** volume and brightness indicator mode (which suppresses the stock macOS on-screen overlay).
+  - Required for the **Keyboard Lock** utility tool.
+
+You can manage these anytime in **System Settings → Privacy & Security**.
+
+---
+
+### Method 2: Build from Source
+
+**Requirements**:
+- macOS 13.0 or later (Sonoma, Sequoia, etc.)
+- Xcode 15+ or Command Line Tools (`xcrun`, `swiftc`)
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/aaravbasketball-del/NotchDock.git
+   cd NotchDock
+   ```
+
+2. Run directly with SwiftPM:
+   ```bash
+   swift run
+   ```
+
+3. Or compile a release binary and bundle:
+   ```bash
+   mkdir -p .build/release .release/NotchDock.app/Contents/MacOS .release/NotchDock.app/Contents/Resources
+   xcrun --sdk macosx swiftc -parse-as-library -module-cache-path .build/module-cache \
+     -target arm64-apple-macosx13.0 \
+     -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
+     -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices \
+     Sources/NotchDock/*.swift -o .build/release/NotchDock-arm64
+   cp .build/release/NotchDock-arm64 .release/NotchDock.app/Contents/MacOS/NotchDock
+   cp Packaging/Info.plist .release/NotchDock.app/Contents/Info.plist
+   cp Assets/NotchDock.icns .release/NotchDock.app/Contents/Resources/NotchDock.icns
+   codesign --force --deep --sign - .release/NotchDock.app
+   ```
+
+---
+
+## Key Features
+
+- **Hardware Notch Alignment**: Custom notch silhouette featuring top outward curves (concave fillets) that merge into the display bezel, and bottom inward rounded corners.
+- **Compact Media & Timer Strip**: Shows remaining timer countdown or Spotify / Apple Music track progress in a mini strip. Hovering over it instantly expands the dock.
+- **Quick Notes to Apple Notes**: Type a quick thought in the input box and press **Enter (↵)**; it automatically saves directly to macOS **Notes.app** and clears the field for your next note.
+- **Volume & Brightness Display Modes**: Choose in Settings whether you want both macOS and NotchDock indicators, only macOS, or only NotchDock (suppressing the stock system overlay).
+- **Clipboard History**: Search, pin, and copy past clipboard clips with keyboard shortcuts.
+- **Drag & Drop File Shelf**: Stage files in the notch for quick drag-out access and AirDrop sharing.
+- **Focus & Stopwatch**: Custom focus timer with countdown, three-tone completion sound, and system HUD alert.
+- **Tools**: Keep Awake assertion (prevents Mac sleep) and a 60-second Keyboard Lock mode for quick laptop cleaning.
