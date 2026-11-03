@@ -3,6 +3,7 @@ import SwiftUI
 import CoreAudio
 import IOKit.graphics
 import Darwin
+import ServiceManagement
 
 private enum NotchDockMetrics {
     static let panelWidth: CGFloat = 1200
@@ -69,6 +70,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installSystemHUDMonitors()
         pointerTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.checkPointerLocation() }
+        }
+        if UserDefaults.standard.bool(forKey: "notchdock.launchAtLogin") {
+            if #available(macOS 13.0, *) {
+                if SMAppService.mainApp.status != .enabled {
+                    try? SMAppService.mainApp.register()
+                }
+            }
         }
     }
 

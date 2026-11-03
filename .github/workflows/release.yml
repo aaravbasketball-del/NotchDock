@@ -23,12 +23,12 @@ jobs:
           xcrun --sdk macosx swiftc -parse-as-library -module-cache-path .build/module-cache \
             -target arm64-apple-macosx13.0 \
             -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
-            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices \
+            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices -framework ServiceManagement \
             Sources/NotchDock/*.swift -o .build/release/NotchDock-arm64
           xcrun --sdk macosx swiftc -parse-as-library -module-cache-path .build/module-cache \
             -target x86_64-apple-macosx13.0 \
             -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
-            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices \
+            -framework IOKit -framework CoreAudio -framework AVFoundation -framework ApplicationServices -framework ServiceManagement \
             Sources/NotchDock/*.swift -o .build/release/NotchDock-x86_64
           lipo -create .build/release/NotchDock-arm64 .build/release/NotchDock-x86_64 \
             -output .release/NotchDock.app/Contents/MacOS/NotchDock

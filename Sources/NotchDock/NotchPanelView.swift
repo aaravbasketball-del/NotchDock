@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import IOKit.pwr_mgt
 import AVFoundation
 import ApplicationServices
+import ServiceManagement
 
 @MainActor
 final class NotchModel: ObservableObject {
@@ -1611,6 +1612,7 @@ struct SettingsView: View {
     @AppStorage("notchdock.systemHUDsEnabled") private var systemHUDsEnabled = true
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
     @AppStorage("notchdock.theme") private var themeName = "black"
+    @AppStorage("notchdock.launchAtLogin") private var launchAtLogin = false
     @StateObject private var updater = NotchUpdater()
 
     private var isLightTheme: Bool { themeName == "white" }
@@ -1638,6 +1640,43 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 settingsHeader("General", subtitle: "Make NotchDock feel right on your Mac.")
                 updateBanner
+                settingsSection("Startup") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(isOn: Binding(
+                            get: {
+                                if #available(macOS 13.0, *) {
+                                    return SMAppService.mainApp.status == .enabled || launchAtLogin
+                                }
+                                return launchAtLogin
+                            },
+                            set: { enabled in
+                                launchAtLogin = enabled
+                                if #available(macOS 13.0, *) {
+                                    do {
+                                        if enabled {
+                                            if SMAppService.mainApp.status != .enabled {
+                                                try SMAppService.mainApp.register()
+                                            }
+                                        } else {
+                                            if SMAppService.mainApp.status == .enabled {
+                                                try SMAppService.mainApp.unregister()
+                                            }
+                                        }
+                                    } catch {
+                                        print("LaunchAtLogin SMAppService error:", error)
+                                    }
+                                }
+                            }
+                        )) {
+                            Label("Open NotchDock on startup", systemImage: "power")
+                        }
+                        .toggleStyle(.switch)
+
+                        Text("Automatically launch NotchDock whenever you log in or restart your Mac.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ink.opacity(0.48))
+                    }
+                }
                 settingsSection("Hover behavior") {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
