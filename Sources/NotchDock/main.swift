@@ -36,7 +36,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudGeneration = 0
     private var lastCapsChangeTime = 0.0
     private var capsSuppressionUntil = 0.0
+    private var mediaEventTap: CFMachPort?
+    private var mediaRunLoopSource: CFRunLoopSource?
     private let model = NotchModel()
+
+    private var indicatorMode: String {
+        UserDefaults.standard.string(forKey: "notchdock.indicatorMode") ?? "both"
+    }
+
+    private var capsLockHUDEnabled: Bool {
+        UserDefaults.standard.object(forKey: "notchdock.capsLockHUDEnabled") as? Bool ?? true
+    }
 
     private var systemHUDsEnabled: Bool {
         UserDefaults.standard.object(forKey: "notchdock.systemHUDsEnabled") as? Bool ?? true
@@ -312,17 +322,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isOn != capsLockOn else { return }
         capsLockOn = isOn
         lastCapsChangeTime = ProcessInfo.processInfo.systemUptime
-        if systemHUDsEnabled { showCapsLockHUD(isOn: isOn) }
+        if capsLockHUDEnabled { showCapsLockHUD(isOn: isOn) }
     }
 
     private func installSystemHUDMonitors() {
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .systemDefined], handler: { [weak self] event in self?.handleSystemEvent(event) }) { eventMonitors.append(monitor) }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .systemDefined], handler: { [weak self] event in self?.handleSystemEvent(event); return event }) { eventMonitors.append(monitor) }
+        installMediaEventTap()
+    }
+
+    private func installMediaEventTap() {
+        let mask = (CGEventMask(1) << 14) // systemDefined
+        let pointer = Unmanaged.passUnretained(self).toOpaque()
+        let callback: CGEventTapCallBack = { _, type, event, refcon in
+            guard let refcon else { return Unmanaged.passUnretained(event) }
+            let app = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = app.mediaEventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
+            if app.indicatorMode == "notchdock", let nsEvent = NSEvent(cgEvent: event), nsEvent.subtype.rawValue == 8 {
+                let keyCode = (nsEvent.data1 >> 16) & 0xFF
+                let keyFlags = nsEvent.data1 & 0xFFFF
+                let keyState = (keyFlags & 0xFF00) >> 8
+                if keyState == 0xA || keyState == 0x1 {
+                    switch keyCode {
+                    case 0:
+                        Task { @MainActor in app.stepVolume(up: true) }
+                        return nil
+                    case 1:
+                        Task { @MainActor in app.stepVolume(up: false) }
+                        return nil
+                    case 2:
+                        Task { @MainActor in app.stepBrightness(up: true) }
+                        return nil
+                    case 3:
+                        Task { @MainActor in app.stepBrightness(up: false) }
+                        return nil
+                    case 7:
+                        Task { @MainActor in app.toggleMute() }
+                        return nil
+                    default:
+                        break
+                    }
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: pointer
+        ) else { return }
+
+        mediaEventTap = tap
+        if let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) {
+            mediaRunLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
     }
 
     private func handleSystemEvent(_ event: NSEvent) {
-        guard systemHUDsEnabled else { return }
         if event.type == .flagsChanged {
+            guard capsLockHUDEnabled else { return }
             let isOn = event.modifierFlags.contains(.capsLock)
             guard isOn != capsLockOn else { return }
             capsLockOn = isOn
@@ -331,10 +398,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard event.type == .systemDefined else { return }
-        // Only auxiliary-control-button events are media keys. Other
-        // system-defined events can be generated while clicking menu-bar or
-        // settings controls and must never create a volume HUD.
         guard event.subtype.rawValue == 8 else { return }
+        if indicatorMode == "macos" { return }
+
         let keyCode = (event.data1 >> 16) & 0xFF
         let now = ProcessInfo.processInfo.systemUptime
         guard keyCode != lastSystemKeyCode || now - lastSystemEventTime > 0.08 else { return }
@@ -350,12 +416,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 3:
             showLiveBrightnessHUD(symbol: "sun.min.fill")
         case 7:
-            // Some keyboards send Caps Lock through this code. Ignore it so
-            // Caps Lock can never turn into a volume HUD on release.
-            break
+            showLiveVolumeHUD(symbol: "speaker.slash.fill")
         case 21: model.showSystemHUD(title: "Keyboard Light", symbol: "lightbulb.max.fill", value: "↑")
         case 22: model.showSystemHUD(title: "Keyboard Light", symbol: "lightbulb.min.fill", value: "↓")
         default: break
+        }
+    }
+
+    func stepVolume(up: Bool) {
+        let current = readOutputVolume() ?? 0.5
+        let newLevel = min(max(up ? current + 0.0625 : current - 0.0625, 0), 1)
+        setOutputVolume(newLevel)
+        volumeLevel = newLevel
+        let percent = Int((newLevel * 100).rounded())
+        model.showSystemHUD(
+            title: "Volume",
+            symbol: newLevel == 0 ? "speaker.slash.fill" : (up ? "speaker.wave.3.fill" : "speaker.wave.1.fill"),
+            value: "\(percent)%",
+            progress: newLevel,
+            mode: "volume"
+        )
+    }
+
+    func toggleMute() {
+        let current = readOutputVolume() ?? 0.5
+        let newLevel = current > 0 ? 0.0 : 0.25
+        setOutputVolume(newLevel)
+        volumeLevel = newLevel
+        let percent = Int((newLevel * 100).rounded())
+        model.showSystemHUD(
+            title: "Volume",
+            symbol: newLevel == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill",
+            value: newLevel == 0 ? "Mute" : "\(percent)%",
+            progress: newLevel,
+            mode: "volume"
+        )
+    }
+
+    func stepBrightness(up: Bool) {
+        let current = readDisplayBrightness() ?? 0.5
+        let newLevel = min(max(up ? current + 0.0625 : current - 0.0625, 0), 1)
+        setDisplayBrightness(newLevel)
+        brightnessLevel = newLevel
+        let percent = Int((newLevel * 100).rounded())
+        model.showSystemHUD(
+            title: "Brightness",
+            symbol: up ? "sun.max.fill" : "sun.min.fill",
+            value: "\(percent)%",
+            progress: newLevel,
+            mode: "brightness"
+        )
+    }
+
+    private func setOutputVolume(_ level: Double) {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID) == noErr else { return }
+        var vol = Float32(level)
+        size = UInt32(MemoryLayout<Float32>.size)
+        var volumeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        for element in [kAudioObjectPropertyElementMain, AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)] {
+            volumeAddress.mElement = element
+            if AudioObjectSetPropertyData(deviceID, &volumeAddress, 0, nil, size, &vol) == noErr {
+                break
+            }
+        }
+    }
+
+    private func setDisplayBrightness(_ level: Double) {
+        if let handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY),
+           let symbol = dlsym(handle, "DisplayServicesSetBrightness") {
+            typealias SetBrightness = @convention(c) (CGDirectDisplayID, Float) -> Int32
+            let setBrightness = unsafeBitCast(symbol, to: SetBrightness.self)
+            _ = setBrightness(CGMainDisplayID(), Float(level))
+            return
+        }
+
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IODisplayConnect"), &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+        while true {
+            let service = IOIteratorNext(iterator)
+            guard service != 0 else { break }
+            IODisplaySetFloatParameter(service, 0, kIODisplayBrightnessKey as CFString, Float(level))
+            IOObjectRelease(service)
         }
     }
 
@@ -551,6 +704,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     deinit {
         pointerTimer?.invalidate()
         for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
+        if let source = mediaRunLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        if let tap = mediaEventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
     }
 }
 

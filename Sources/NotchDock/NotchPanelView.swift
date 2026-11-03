@@ -1473,6 +1473,8 @@ final class KeyboardLockController {
 
 struct SettingsView: View {
     @AppStorage("notchdock.closeDelay") private var closeDelay = 0.12
+    @AppStorage("notchdock.indicatorMode") private var indicatorMode = "both"
+    @AppStorage("notchdock.capsLockHUDEnabled") private var capsLockHUDEnabled = true
     @AppStorage("notchdock.systemHUDsEnabled") private var systemHUDsEnabled = true
     @AppStorage("notchdock.spotifyConnected") private var spotifyConnected = false
     @AppStorage("notchdock.theme") private var themeName = "black"
@@ -1516,11 +1518,27 @@ struct SettingsView: View {
                             .font(.system(size: 11)).foregroundStyle(ink.opacity(0.48))
                     }
                 }
-                settingsSection("System indicators") {
-                    Toggle(isOn: $systemHUDsEnabled) {
-                        Label("Show volume, brightness, and Caps Lock HUDs", systemImage: "speaker.wave.2")
+                settingsSection("Volume & Brightness indicators") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Indicator style", selection: $indicatorMode) {
+                            Text("Both").tag("both")
+                            Text("Only NotchDock").tag("notchdock")
+                            Text("Only macOS").tag("macos")
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(indicatorModeDescription)
+                            .font(.system(size: 11))
+                            .foregroundStyle(ink.opacity(0.55))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Divider().opacity(0.15)
+
+                        Toggle(isOn: $capsLockHUDEnabled) {
+                            Label("Show Caps Lock indicator in notch", systemImage: "capslock")
+                        }
+                        .toggleStyle(.switch)
                     }
-                    .toggleStyle(.switch)
                 }
                 settingsSection("Appearance") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -1586,6 +1604,17 @@ struct SettingsView: View {
                 }
             }
             .padding(26)
+        }
+    }
+
+    private var indicatorModeDescription: String {
+        switch indicatorMode {
+        case "notchdock":
+            return "Displays volume and brightness changes exclusively in NotchDock, hiding the stock macOS overlay."
+        case "macos":
+            return "Displays volume and brightness changes using only the stock macOS overlay. NotchDock indicators are turned off."
+        default:
+            return "Displays both the native macOS overlay and the NotchDock notch indicator simultaneously."
         }
     }
 
