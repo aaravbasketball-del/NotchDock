@@ -992,19 +992,47 @@ struct NotchSilhouette: Shape {
             VStack(alignment: .leading, spacing: 8) {
                 let lines = model.updateNoticeMessage.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 if lines.isEmpty {
-                    Text("NotchDock 1.0 includes performance improvements and new features.")
+                    Text("NotchDock includes performance improvements and new features.")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundStyle(ink.opacity(0.85))
                         .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    ForEach(lines, id: \.self) { line in
-                        Text(line)
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(ink.opacity(0.85))
-                            .lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(lines, id: \.self) { line in
+                                if line == "WHAT'S NEW" {
+                                    Label("What’s New", systemImage: "sparkles")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(Color(red: 1.0, green: 0.5, blue: 0.15))
+                                        .padding(.top, 4)
+                                } else if line == "WHAT'S FIXED" {
+                                    Label("What’s Fixed", systemImage: "wrench.and.screwdriver.fill")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(Color.blue)
+                                        .padding(.top, 8)
+                                } else if line == "IMPROVEMENTS" {
+                                    Label("Improvements", systemImage: "checkmark.circle.fill")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(Color.green)
+                                        .padding(.top, 8)
+                                } else {
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Text("•")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(ink.opacity(0.45))
+                                        Text(line.replacingOccurrences(of: "^[•\\-*]\\s*", with: "", options: .regularExpression))
+                                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                                            .foregroundStyle(ink.opacity(0.88))
+                                            .lineSpacing(2)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .frame(maxHeight: 240)
                 }
             }
             .padding(14)

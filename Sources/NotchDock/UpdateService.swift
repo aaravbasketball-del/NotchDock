@@ -131,7 +131,7 @@ final class NotchUpdater: ObservableObject {
                 let newApp = root.appendingPathComponent("NotchDock.app")
                 guard FileManager.default.fileExists(atPath: newApp.path) else { throw URLError(.fileDoesNotExist) }
                 let version = normalizedVersion(release.tagName)
-                let message = cleanReleaseDescription(release.body)
+                let message = cleanReleaseDescription(release.body, version: version)
                 UserDefaults.standard.set(version, forKey: "notchdock.pendingUpdateVersion")
                 UserDefaults.standard.set(message, forKey: "notchdock.pendingUpdateMessage")
                 try launchReplacementHelper(root: root, newApp: newApp, currentApp: Bundle.main.bundleURL)
@@ -196,42 +196,89 @@ final class NotchUpdater: ObservableObject {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private func cleanReleaseDescription(_ raw: String?) -> String {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return "NotchDock 1.0 includes performance improvements and new features."
-        }
-        let lines = raw.components(separatedBy: .newlines)
-        var cleanedItems: [String] = []
+    private func cleanReleaseDescription(_ raw: String?, version: String = "") -> String {
+        var newFeatures: [String] = []
+        var fixes: [String] = []
+        var otherItems: [String] = []
 
-        for line in lines {
-            var item = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if item.isEmpty { continue }
-            // Skip markdown headings like "## What's Changed"
-            if item.hasPrefix("#") { continue }
-            // Skip full changelog links and compare URLs
-            if item.lowercased().contains("full changelog") || item.contains("/compare/") { continue }
-            if item.hasPrefix("http://") || item.hasPrefix("https://") { continue }
+        if let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let lines = raw.components(separatedBy: .newlines)
+            var currentCategory = ""
 
-            // Strip GitHub PR/commit author trailers like "by @aaravbasketball-del in https://github.com/..."
-            if let byRange = item.range(of: " by @", options: .backwards) {
-                item = String(item[..<byRange.lowerBound])
+            for line in lines {
+                var item = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if item.isEmpty { continue }
+
+                let lower = item.lowercased()
+                if lower.contains("what's new") || lower.contains("features") || lower.contains("new features") {
+                    currentCategory = "new"
+                    continue
+                } else if lower.contains("fix") || lower.contains("bug") || lower.contains("resolved") || lower.contains("improvements") {
+                    currentCategory = "fixed"
+                    continue
+                }
+
+                if item.hasPrefix("#") { continue }
+                if lower.contains("full changelog") || item.contains("/compare/") { continue }
+                if item.hasPrefix("http://") || item.hasPrefix("https://") { continue }
+
+                if let byRange = item.range(of: " by @", options: .backwards) {
+                    item = String(item[..<byRange.lowerBound])
+                }
+                item = item.replacingOccurrences(of: "^[*\\-•]\\s*", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                item = item.replacingOccurrences(of: "https?://\\S+", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                guard !item.isEmpty else { continue }
+
+                let itemLower = item.lowercased()
+                if currentCategory == "new" || itemLower.hasPrefix("add") || itemLower.contains("feature") || itemLower.contains("new ") || itemLower.contains("support") || itemLower.contains("badge") || itemLower.contains("version") {
+                    newFeatures.append(item)
+                } else if currentCategory == "fixed" || itemLower.hasPrefix("fix") || itemLower.contains("bug") || itemLower.contains("eliminate") || itemLower.contains("restore") || itemLower.contains("remove") || itemLower.contains("box") || itemLower.contains("freeze") || itemLower.contains("artifact") {
+                    fixes.append(item)
+                } else {
+                    otherItems.append(item)
+                }
             }
-            // Strip markdown bullet markers: "*", "-", "•"
-            item = item.replacingOccurrences(of: "^[*\\-•]\\s*", with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Remove any remaining inline URLs
-            item = item.replacingOccurrences(of: "https?://\\S+", with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if !item.isEmpty {
-                cleanedItems.append("• " + item)
-            }
         }
 
-        if cleanedItems.isEmpty {
-            return "NotchDock 1.0 includes performance improvements and new features."
+        if newFeatures.isEmpty && fixes.isEmpty && otherItems.isEmpty {
+            return defaultReleaseNotes(for: version)
         }
-        return cleanedItems.joined(separator: "\n")
+
+        var result: [String] = []
+        if !newFeatures.isEmpty {
+            result.append("WHAT'S NEW")
+            result.append(contentsOf: newFeatures.map { "• " + $0 })
+        }
+        if !fixes.isEmpty {
+            if !result.isEmpty { result.append("") }
+            result.append("WHAT'S FIXED")
+            result.append(contentsOf: fixes.map { "• " + $0 })
+        }
+        if !otherItems.isEmpty && (newFeatures.isEmpty || fixes.isEmpty) {
+            if !result.isEmpty { result.append("") }
+            result.append("IMPROVEMENTS")
+            result.append(contentsOf: otherItems.map { "• " + $0 })
+        }
+
+        return result.isEmpty ? defaultReleaseNotes(for: version) : result.joined(separator: "\n")
+    }
+
+    private func defaultReleaseNotes(for version: String) -> String {
+        """
+        WHAT'S NEW
+        • App Version in Settings: Current version is now displayed directly in the Settings update card.
+        • Two-Way Apple Notes Sync: Type quick notes in the notch to auto-save to Apple Notes, with click-to-open feed.
+        • Fake Notch & Dynamic Island: Simulate a MacBook notch or floating Dynamic Island pill with customizable dimensions.
+        • Small Trigger Bump: Subtle tactile hover target for external displays.
+
+        WHAT'S FIXED
+        • Apple Notes Saving & Permissions: Auto-launches Notes.app and eliminates modal freezes when saving notes.
+        • Outward Rounded Top Corners: Restored smooth fillets merging directly into the display bezel.
+        • Square Shadow Artifact: Eliminated the transparent rectangular box and side shadow clipping.
+        """
     }
 }
