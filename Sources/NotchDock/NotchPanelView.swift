@@ -616,10 +616,24 @@ final class NotchModel: ObservableObject {
         // this guarantees a completion popup replaces an older volume HUD.
         onHUDVisibilityChanged?(true)
         hudTask = Task { @MainActor [weak self] in
-            let displayMilliseconds = mode == "completion" ? 5000 : 1150
+            let displayMilliseconds: Int
+            switch mode {
+            case "completion":
+                displayMilliseconds = 5000
+            case "volume", "brightness":
+                displayMilliseconds = 2400
+            case "caps":
+                displayMilliseconds = 1800
+            default:
+                displayMilliseconds = 2400
+            }
             try? await Task.sleep(for: .milliseconds(displayMilliseconds))
             guard let self, !Task.isCancelled else { return }
-            self.hudActive = false
+            withAnimation(.easeOut(duration: 0.28)) {
+                self.hudActive = false
+            }
+            try? await Task.sleep(for: .milliseconds(280))
+            guard !Task.isCancelled else { return }
             self.onHUDVisibilityChanged?(false)
         }
     }
